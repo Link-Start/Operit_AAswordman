@@ -102,6 +102,18 @@ class ChatHistoryDelegate(
         )
     }
 
+    private suspend fun refreshCurrentChatDisplayFlags(
+        chatId: String,
+        messages: List<ChatMessage> = _chatHistory.value,
+    ) {
+        val loadResult = buildCurrentChatLoadResult(chatId, messages)
+        setCurrentChatMessagesInMemory(
+            messages = loadResult.messages,
+            hasOlderPersistedHistory = loadResult.hasOlderPersistedHistory,
+            hasNewerPersistedHistory = loadResult.hasNewerPersistedHistory,
+        )
+    }
+
     private suspend fun buildCurrentChatLoadResult(
         chatId: String,
         messages: List<ChatMessage>,
@@ -341,8 +353,11 @@ class ChatHistoryDelegate(
             upToTimestampInclusive = upToTimestampInclusive,
         )
 
-    suspend fun loadChatMessageLocatorPreviews(chatId: String): List<ChatMessageLocatorPreview> =
-        chatHistoryManager.loadChatMessageLocatorPreviews(chatId)
+    suspend fun loadChatMessageLocatorPreviews(
+        chatId: String,
+        query: String = "",
+    ): List<ChatMessageLocatorPreview> =
+        chatHistoryManager.loadChatMessageLocatorPreviews(chatId, query)
 
     suspend fun hasUserMessage(chatId: String): Boolean = chatHistoryManager.hasUserMessage(chatId)
 
@@ -1087,6 +1102,37 @@ class ChatHistoryDelegate(
         }
     }
 
+    suspend fun deleteMessagesByTimestamps(chatId: String, timestamps: List<Long>) {
+        if (timestamps.isEmpty()) {
+            return
+        }
+
+        runDestructiveHistoryMutation(chatId) {
+            timestamps.distinct().forEach { timestamp ->
+                chatHistoryManager.deleteMessage(chatId, timestamp)
+            }
+
+            if (_currentChatId.value == chatId) {
+                reloadCurrentChatDisplayHistory(chatId)
+            }
+            true
+        }
+    }
+
+    fun setMessageFavorite(timestamp: Long, isFavorite: Boolean) {
+        coroutineScope.launch {
+            val chatId = _currentChatId.value ?: return@launch
+            val shouldReloadCurrentChat =
+                historyUpdateMutex.withLock {
+                    chatHistoryManager.setMessageFavorite(chatId, timestamp, isFavorite)
+                    chatId == _currentChatId.value
+                }
+            if (shouldReloadCurrentChat && chatId == _currentChatId.value) {
+                reloadCurrentChatDisplayHistory(chatId)
+            }
+        }
+    }
+
     suspend fun deleteMessageVariant(timestamp: Long, variantIndex: Int) {
         val chatId = _currentChatId.value ?: throw IllegalStateException("No active chat")
         val shouldReloadCurrentChat =
@@ -1345,9 +1391,7 @@ class ChatHistoryDelegate(
         AppLogger.d(TAG, "向当前会话内存追加消息, ts: ${message.timestamp}")
         setCurrentChatMessagesInMemory(
             messages = windowMessages,
-            hasOlderPersistedHistory =
-                currentChatWindow.hasPersistedOlderHistoryNow() ||
-                    windowMessages.firstOrNull()?.timestamp != currentMessages.firstOrNull()?.timestamp,
+            hasOlderPersistedHistory = currentChatWindow.hasPersistedOlderHistoryNow(),
             hasNewerPersistedHistory = false,
         )
         return false
@@ -1396,6 +1440,7 @@ class ChatHistoryDelegate(
                 )
                 if (isVisibleNewMessage) {
                     chatHistoryManager.addMessage(targetChatId, message)
+                    refreshCurrentChatDisplayFlags(targetChatId)
                 } else {
                     chatHistoryManager.updateMessage(targetChatId, message)
                 }

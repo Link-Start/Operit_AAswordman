@@ -48,6 +48,16 @@ internal object ToolPkgMainRegistrationScriptParser {
                     registrations = captured.inputMenuTogglePlugins,
                     registryName = TOOLPKG_REGISTRATION_INPUT_MENU_TOGGLE_PLUGIN
                 )
+            val chatInputHooks =
+                parseRegisteredFunctionHooks(
+                    registrations = captured.chatInputHooks,
+                    registryName = TOOLPKG_REGISTRATION_CHAT_INPUT_HOOK
+                )
+            val chatViewHooks =
+                parseRegisteredFunctionHooks(
+                    registrations = captured.chatViewHooks,
+                    registryName = TOOLPKG_REGISTRATION_CHAT_VIEW_HOOK
+                )
             val toolLifecycleHooks =
                 parseRegisteredFunctionHooks(
                     registrations = captured.toolLifecycleHooks,
@@ -88,6 +98,11 @@ internal object ToolPkgMainRegistrationScriptParser {
                     registrations = captured.promptEstimateFinalizeHooks,
                     registryName = TOOLPKG_REGISTRATION_PROMPT_ESTIMATE_FINALIZE_HOOK
                 )
+            val summaryGenerateHooks =
+                parseRegisteredFunctionHooks(
+                    registrations = captured.summaryGenerateHooks,
+                    registryName = TOOLPKG_REGISTRATION_SUMMARY_GENERATE_HOOK
+                )
             val aiProviders =
                 parseRegisteredAiProviders(
                     registrations = captured.aiProviders,
@@ -104,6 +119,8 @@ internal object ToolPkgMainRegistrationScriptParser {
                         messageProcessingPlugins = messageProcessingPlugins,
                         xmlRenderPlugins = xmlRenderPlugins,
                         inputMenuTogglePlugins = inputMenuTogglePlugins,
+                        chatInputHooks = chatInputHooks,
+                        chatViewHooks = chatViewHooks,
                         toolLifecycleHooks = toolLifecycleHooks,
                         promptInputHooks = promptInputHooks,
                         promptHistoryHooks = promptHistoryHooks,
@@ -112,6 +129,7 @@ internal object ToolPkgMainRegistrationScriptParser {
                         toolPromptComposeHooks = toolPromptComposeHooks,
                         promptFinalizeHooks = promptFinalizeHooks,
                         promptEstimateFinalizeHooks = promptEstimateFinalizeHooks,
+                        summaryGenerateHooks = summaryGenerateHooks,
                         aiProviders = aiProviders
                     )
             )

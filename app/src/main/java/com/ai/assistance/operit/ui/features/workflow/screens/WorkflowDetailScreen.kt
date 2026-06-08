@@ -305,14 +305,21 @@ fun WorkflowDetailScreen(
                     workflow = workflow,
                     onDismiss = { showEditDialog = false },
                     onSave = { name, description, enabled ->
-                        viewModel.updateWorkflow(
-                            workflow.copy(
-                                name = name,
-                                description = description,
-                                enabled = enabled
-                            )
-                        ) {
-                            showEditDialog = false
+                        val contentChanged = workflow.name != name || workflow.description != description
+                        if (contentChanged) {
+                            viewModel.updateWorkflow(
+                                workflow.copy(
+                                    name = name,
+                                    description = description,
+                                    enabled = enabled
+                                )
+                            ) {
+                                showEditDialog = false
+                            }
+                        } else {
+                            viewModel.setWorkflowEnabled(workflow.id, enabled) {
+                                showEditDialog = false
+                            }
                         }
                     }
                 )
@@ -704,7 +711,9 @@ fun NodeDialog(
     val packageManager = remember(context) { toolHandler.getOrCreatePackageManager() }
     val allToolNames = remember(context) {
         toolHandler.registerDefaultTools()
-        toolHandler.getAllToolNames()
+        toolHandler.getAllToolNames().filterNot {
+            it == "package_proxy" || it == "proxy" || it == "search"
+        }
     }
     val filteredToolNames = remember(actionType, allToolNames) {
         val query = actionType.trim()

@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -253,6 +252,9 @@ fun ChatScreenContent(
                         onSpeakMessage = { content -> actualViewModel.speakMessage(content) },
                         onAutoReadMessage = { content -> actualViewModel.enableAutoReadAndSpeak(content) },
                         onReplyToMessage = { message -> actualViewModel.setReplyToMessage(message) },
+                        onToggleFavoriteMessage = { timestamp, isFavorite ->
+                            actualViewModel.setMessageFavorite(timestamp, isFavorite)
+                        },
                         onCreateBranch = { timestamp -> actualViewModel.createBranch(timestamp) },
                         onInsertSummary = { message -> actualViewModel.insertSummary(message) },
                         onMentionRoleFromAvatar = { roleName -> actualViewModel.insertRoleMention(roleName) },
@@ -270,8 +272,8 @@ fun ChatScreenContent(
                         onShowLatestDisplayWindow = {
                             actualViewModel.showLatestMessagesForCurrentChat()
                         },
-                        loadMessageLocatorEntries = { chatId ->
-                            actualViewModel.loadChatMessageLocatorPreviews(chatId)
+                        loadMessageLocatorEntries = { chatId, query ->
+                            actualViewModel.loadChatMessageLocatorPreviews(chatId, query)
                         },
                         onRevealMessageForLocator = { targetTimestamp ->
                             actualViewModel.revealMessageForCurrentChat(targetTimestamp)
@@ -366,6 +368,9 @@ fun ChatScreenContent(
                         },
                         onSpeakMessage = { content -> actualViewModel.speakMessage(content) },
                         onReplyToMessage = { message -> actualViewModel.setReplyToMessage(message) },
+                        onToggleFavoriteMessage = { timestamp, isFavorite ->
+                            actualViewModel.setMessageFavorite(timestamp, isFavorite)
+                        },
                         onCreateBranch = { timestamp -> actualViewModel.createBranch(timestamp) },
                         onInsertSummary = { message -> actualViewModel.insertSummary(message) },
                         onAutoReadMessage = { content -> actualViewModel.enableAutoReadAndSpeak(content) },
@@ -384,8 +389,8 @@ fun ChatScreenContent(
                         onShowLatestDisplayWindow = {
                             actualViewModel.showLatestMessagesForCurrentChat()
                         },
-                        loadMessageLocatorEntries = { chatId ->
-                            actualViewModel.loadChatMessageLocatorPreviews(chatId)
+                        loadMessageLocatorEntries = { chatId, query ->
+                            actualViewModel.loadChatMessageLocatorPreviews(chatId, query)
                         },
                         onRevealMessageForLocator = { targetTimestamp ->
                             actualViewModel.revealMessageForCurrentChat(targetTimestamp)
@@ -512,6 +517,34 @@ fun ChatScreenContent(
                                         if (allSelectableSelected) R.string.clear_selection else R.string.select_all_messages
                                 ),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        FilledIconButton(
+                            onClick = {
+                                if (selectedMessageIndices.isNotEmpty()) {
+                                    val selectedMessages =
+                                        selectedMessageIndices
+                                            .mapNotNull { index -> chatHistory.getOrNull(index) }
+                                            .sortedBy { it.timestamp }
+                                    actualViewModel.enqueueSelectedMessagesForMemoryAutoSave(
+                                        selectedMessages
+                                    )
+                                }
+                            },
+                            enabled = selectedMessageIndices.isNotEmpty(),
+                            modifier = Modifier.size(32.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = stringResource(R.string.add_selected_to_memory),
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -808,22 +841,6 @@ fun ChatScreenContent(
                 }
             )
         }
-
-        // Scroll to bottom button
-        ScrollToBottomButton(
-            scrollState = scrollState,
-            coroutineScope = coroutineScope,
-            autoScrollToBottom = autoScrollToBottom,
-            hasNewerDisplayHistory = hasNewerDisplayHistory,
-            onRequestLatestMessages = {
-                actualViewModel.showLatestMessagesForCurrentChat()
-            },
-            onAutoScrollToBottomChange = onAutoScrollToBottomChange,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = bottomInset + 16.dp)
-        )
-
 
         // 导出平台选择对话框
         if (showExportPlatformDialog) {

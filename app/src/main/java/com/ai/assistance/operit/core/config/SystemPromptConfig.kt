@@ -4,10 +4,12 @@ import android.content.Context
 import android.os.Environment
 import com.ai.assistance.operit.core.chat.hooks.PromptHookContext
 import com.ai.assistance.operit.core.chat.hooks.PromptHookRegistry
+import com.ai.assistance.operit.core.tools.climode.CliToolModeSupport
+import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.core.tools.packTool.PackageManager
 import com.ai.assistance.operit.data.preferences.ApiPreferences
 import com.ai.assistance.operit.data.skill.SkillRepository
-import com.ai.assistance.operit.ui.features.chat.webview.workspace.process.WorkspaceAttachmentProcessor
+import com.ai.assistance.operit.ui.features.chat.webview.workspace.process.WorkspaceRuleFileReader
 import com.ai.assistance.operit.util.LocaleUtils
 
 object SystemPromptConfig {
@@ -77,6 +79,7 @@ PACKAGE SYSTEM
   - 将目标工具参数放入 params（JSON对象）"""
 
     private fun getAvailableToolsEn(
+        chatId: String?,
         hasImageRecognition: Boolean,
         chatModelHasDirectImage: Boolean,
         hasAudioRecognition: Boolean,
@@ -85,9 +88,11 @@ PACKAGE SYSTEM
         chatModelHasDirectVideo: Boolean,
         safBookmarkNames: List<String>,
         toolVisibility: Map<String, Boolean>,
+        hookMetadata: Map<String, Any?> = emptyMap(),
         dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
     ): String {
         return SystemToolPrompts.generateToolsPromptEn(
+            chatId = chatId,
             hasBackendImageRecognition = hasImageRecognition,
             includeMemoryTools = false,
             chatModelHasDirectImage = chatModelHasDirectImage,
@@ -97,6 +102,7 @@ PACKAGE SYSTEM
             chatModelHasDirectVideo = chatModelHasDirectVideo,
             safBookmarkNames = safBookmarkNames,
             toolVisibility = toolVisibility,
+            hookMetadata = hookMetadata,
             dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
         )
     }
@@ -106,6 +112,7 @@ PACKAGE SYSTEM
     }
 
     private fun getAvailableToolsCn(
+        chatId: String?,
         hasImageRecognition: Boolean,
         chatModelHasDirectImage: Boolean,
         hasAudioRecognition: Boolean,
@@ -114,9 +121,11 @@ PACKAGE SYSTEM
         chatModelHasDirectVideo: Boolean,
         safBookmarkNames: List<String>,
         toolVisibility: Map<String, Boolean>,
+        hookMetadata: Map<String, Any?> = emptyMap(),
         dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
     ): String {
         return SystemToolPrompts.generateToolsPromptCn(
+            chatId = chatId,
             hasBackendImageRecognition = hasImageRecognition,
             includeMemoryTools = false,
             chatModelHasDirectImage = chatModelHasDirectImage,
@@ -126,6 +135,7 @@ PACKAGE SYSTEM
             chatModelHasDirectVideo = chatModelHasDirectVideo,
             safBookmarkNames = safBookmarkNames,
             toolVisibility = toolVisibility,
+            hookMetadata = hookMetadata,
             dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
         )
     }
@@ -235,6 +245,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
   suspend fun getSystemPrompt(
           context: Context,
           packageManager: PackageManager,
+          chatId: String? = null,
           workspacePath: String? = null,
           workspaceEnv: String? = null,
           safBookmarkNames: List<String> = emptyList(),
@@ -248,14 +259,17 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
           chatModelHasDirectAudio: Boolean = false,
           chatModelHasDirectVideo: Boolean = false,
           useToolCallApi: Boolean = false,
+          toolExposureMode: ToolExposureMode = ToolExposureMode.FULL,
           toolVisibility: Map<String, Boolean> = emptyMap(),
           allowedPackageNames: Set<String>? = null,
           allowedSkillNames: Set<String>? = null,
           allowedMcpServerNames: Set<String>? = null,
+          hookMetadata: Map<String, Any?> = emptyMap(),
           dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
   ): String {
     val enabledPackages = packageManager.getEnabledPackageNames()
-    val packageSystemVisible = enableTools && (toolVisibility["use_package"] ?: true)
+    val packageSystemVisible =
+        toolExposureMode == ToolExposureMode.FULL && enableTools && (toolVisibility["use_package"] ?: true)
     val mcpServers = packageManager.getAvailableServerPackages().filterKeys { serverName ->
         allowedMcpServerNames?.contains(serverName) ?: true
     }
@@ -333,7 +347,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
         if (useEnglish) SYSTEM_PROMPT_TEMPLATE else SYSTEM_PROMPT_TEMPLATE_CN
     }
     val workspaceRuleFile =
-        WorkspaceAttachmentProcessor.readWorkspaceRootRuleFile(
+        WorkspaceRuleFileReader.readWorkspaceRootRuleFile(
             context = context,
             workspacePath = workspacePath,
             workspaceEnv = workspaceEnv
@@ -356,9 +370,10 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
 
     // Determine the available tools string based on tool visibility and recognition capabilities.
     // 当使用Tool Call API时，不在系统提示词中包含工具描述（工具已通过API的tools字段发送）
-    val availableToolsEn = if (useToolCallApi) "" else (
+    val availableToolsEn = if (useToolCallApi || toolExposureMode == ToolExposureMode.CLI) "" else (
         getMemoryToolsEn(toolVisibility) +
             getAvailableToolsEn(
+                chatId = chatId,
                 hasImageRecognition = hasImageRecognition,
                 chatModelHasDirectImage = chatModelHasDirectImage,
                 hasAudioRecognition = hasAudioRecognition,
@@ -367,12 +382,14 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
                 chatModelHasDirectVideo = chatModelHasDirectVideo,
                 safBookmarkNames = safBookmarkNames,
                 toolVisibility = toolVisibility,
+                hookMetadata = hookMetadata,
                 dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
             )
     )
-    val availableToolsCn = if (useToolCallApi) "" else (
+    val availableToolsCn = if (useToolCallApi || toolExposureMode == ToolExposureMode.CLI) "" else (
         getMemoryToolsCn(toolVisibility) +
             getAvailableToolsCn(
+                chatId = chatId,
                 hasImageRecognition = hasImageRecognition,
                 chatModelHasDirectImage = chatModelHasDirectImage,
                 hasAudioRecognition = hasAudioRecognition,
@@ -381,14 +398,21 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
                 chatModelHasDirectVideo = chatModelHasDirectVideo,
                 safBookmarkNames = safBookmarkNames,
                 toolVisibility = toolVisibility,
+                hookMetadata = hookMetadata,
                 dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
             )
     )
 
     // Handle tools disable/enable
     if (enableTools) {
-        // 当使用Tool Call API时，移除XML格式说明和工具列表
-        if (useToolCallApi) {
+        if (toolExposureMode == ToolExposureMode.CLI) {
+            prompt = prompt
+                .replace("TOOL_USAGE_GUIDELINES_SECTION", CliToolModeSupport.buildCliModePrompt(useEnglish))
+                .replace("PACKAGE_SYSTEM_GUIDELINES_SECTION", "")
+                .replace("ACTIVE_PACKAGES_SECTION", "")
+                .replace("AVAILABLE_TOOLS_SECTION", "")
+        } else if (useToolCallApi) {
+            // 当使用Tool Call API时，移除XML格式说明和工具列表
             val packageGuidelines =
                 if (useEnglish) {
                     PACKAGE_SYSTEM_GUIDELINES_TOOL_CALL_EN
@@ -533,6 +557,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
   suspend fun getSystemPromptWithCustomPrompts(
           context: Context,
           packageManager: PackageManager,
+          chatId: String?,
           workspacePath: String?,
           workspaceEnv: String? = null,
           safBookmarkNames: List<String> = emptyList(),
@@ -547,6 +572,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
           chatModelHasDirectAudio: Boolean = false,
           chatModelHasDirectVideo: Boolean = false,
           useToolCallApi: Boolean = false,
+          toolExposureMode: ToolExposureMode = ToolExposureMode.FULL,
           toolVisibility: Map<String, Boolean> = emptyMap(),
           allowedPackageNames: Set<String>? = null,
           allowedSkillNames: Set<String>? = null,
@@ -554,6 +580,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
           enableGroupOrchestrationHint: Boolean = false,
           groupOrchestrationRoleName: String = "",
           groupParticipantNamesText: String = "",
+          hookMetadata: Map<String, Any?> = emptyMap(),
           dispatchSystemPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchSystemPromptComposeHooks,
           dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
   ): String {
@@ -561,6 +588,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
         dispatchSystemPromptComposeHooks(
             PromptHookContext(
                 stage = "before_compose_system_prompt",
+                chatId = chatId,
                 useEnglish = useEnglish,
                 metadata =
                     mapOf(
@@ -577,6 +605,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
                         "chatModelHasDirectAudio" to chatModelHasDirectAudio,
                         "chatModelHasDirectVideo" to chatModelHasDirectVideo,
                         "useToolCallApi" to useToolCallApi,
+                        "toolExposureMode" to toolExposureMode.name,
                         "toolVisibility" to toolVisibility,
                         "allowedPackageNames" to allowedPackageNames.orEmpty().toList(),
                         "allowedSkillNames" to allowedSkillNames.orEmpty().toList(),
@@ -584,7 +613,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
                         "enableGroupOrchestrationHint" to enableGroupOrchestrationHint,
                         "groupOrchestrationRoleName" to groupOrchestrationRoleName,
                         "groupParticipantNamesText" to groupParticipantNamesText
-                    )
+                    ) + hookMetadata
             )
         )
 
@@ -592,6 +621,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
         beforeContext.systemPrompt ?: getSystemPrompt(
             context = context,
             packageManager = packageManager,
+            chatId = chatId,
             workspacePath = workspacePath,
             workspaceEnv = workspaceEnv,
             safBookmarkNames = safBookmarkNames,
@@ -605,10 +635,12 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
             chatModelHasDirectAudio = chatModelHasDirectAudio,
             chatModelHasDirectVideo = chatModelHasDirectVideo,
             useToolCallApi = useToolCallApi,
+            toolExposureMode = toolExposureMode,
             toolVisibility = toolVisibility,
             allowedPackageNames = allowedPackageNames,
             allowedSkillNames = allowedSkillNames,
             allowedMcpServerNames = allowedMcpServerNames,
+            hookMetadata = hookMetadata,
             dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
         )
 
@@ -645,6 +677,7 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
     return getSystemPrompt(
         context = context,
         packageManager = packageManager,
+        chatId = null,
         workspacePath = null,
         workspaceEnv = null,
         safBookmarkNames = emptyList(),

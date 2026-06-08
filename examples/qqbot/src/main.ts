@@ -1,43 +1,65 @@
-import { ensureQQBotServiceStarted } from "./shared/qqbot_runtime";
+import qqbotSettingsScreen from "./ui/qqbot_settings/index.ui.js";
+import "./shared/qqbot_ipc";
+import {
+  onQQBotListenerApplicationCreate as qqbotListenerApplicationCreate,
+  onQQBotListenerApplicationForeground as qqbotListenerApplicationForeground
+} from "./shared/qqbot_runtime";
+import {
+  onQQBotAutoReplyApplicationCreate as qqbotAutoReplyApplicationCreate,
+  onQQBotAutoReplyApplicationForeground as qqbotAutoReplyApplicationForeground,
+  onQQBotAutoReplyApplicationTerminate as qqbotAutoReplyApplicationTerminate
+} from "./shared/qqbot_auto_reply";
+
+function logQQBotStartup(message: string): void {
+  console.log(`[qqbot] ${message}`);
+}
 
 export function registerToolPkg() {
-  ToolPkg.registerAppLifecycleHook({
-    id: "qqbot_app_create",
-    event: "application_on_create",
-    function: onApplicationCreate,
+  logQQBotStartup("registerToolPkg start");
+
+  ToolPkg.registerToolboxUiModule({
+    id: "qqbot_settings",
+    runtime: "compose_dsl",
+    screen: qqbotSettingsScreen,
+    params: {},
+    title: {
+      zh: "QQ Bot 设置",
+      en: "QQ Bot Settings",
+    },
   });
 
   ToolPkg.registerAppLifecycleHook({
-    id: "qqbot_app_foreground",
-    event: "application_on_foreground",
-    function: onApplicationForeground,
+    id: "qqbot_listener_app_create",
+    event: "application_on_create",
+    function: qqbotListenerApplicationCreate,
   });
+
+  ToolPkg.registerAppLifecycleHook({
+    id: "qqbot_listener_app_foreground",
+    event: "application_on_foreground",
+    function: qqbotListenerApplicationForeground,
+  });
+
+  ToolPkg.registerAppLifecycleHook({
+    id: "qqbot_auto_reply_app_create",
+    event: "application_on_create",
+    function: qqbotAutoReplyApplicationCreate,
+  });
+
+  ToolPkg.registerAppLifecycleHook({
+    id: "qqbot_auto_reply_app_foreground",
+    event: "application_on_foreground",
+    function: qqbotAutoReplyApplicationForeground,
+  });
+
+  ToolPkg.registerAppLifecycleHook({
+    id: "qqbot_auto_reply_app_terminate",
+    event: "application_on_terminate",
+    function: qqbotAutoReplyApplicationTerminate,
+  });
+
+  logQQBotStartup("registerToolPkg hooks registered");
+  logQQBotStartup("registerToolPkg done");
 
   return true;
-}
-
-function runAutoStart(source: string, input?: ToolPkg.AppLifecycleHookEvent | unknown): any {
-  try {
-    return ensureQQBotServiceStarted({
-      source,
-      allow_missing_config: true,
-      timeout_ms: 2500,
-      lifecycle_event: (input as any)?.eventName || source,
-    });
-  } catch (error: any) {
-    return {
-      ok: false,
-      source,
-      lifecycleEvent: (input as any)?.eventName || source,
-      error: error && error.message ? error.message : String(error),
-    };
-  }
-}
-
-export function onApplicationCreate(input?: ToolPkg.AppLifecycleHookEvent | unknown): any {
-  return runAutoStart("application_on_create", input);
-}
-
-export function onApplicationForeground(input?: ToolPkg.AppLifecycleHookEvent | unknown): any {
-  return runAutoStart("application_on_foreground", input);
 }

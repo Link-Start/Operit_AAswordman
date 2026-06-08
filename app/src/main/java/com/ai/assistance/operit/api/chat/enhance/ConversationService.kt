@@ -6,13 +6,18 @@ import com.ai.assistance.operit.core.chat.hooks.PromptHookContext
 import com.ai.assistance.operit.core.chat.hooks.PromptHookRegistry
 import com.ai.assistance.operit.core.chat.hooks.PromptTurn
 import com.ai.assistance.operit.core.chat.hooks.PromptTurnKind
+import com.ai.assistance.operit.core.chat.hooks.SummaryHookContext
+import com.ai.assistance.operit.core.chat.hooks.SummaryHookRegistry
+import com.ai.assistance.operit.core.chat.hooks.buildActivePromptHookMetadata
 import com.ai.assistance.operit.core.chat.hooks.toPromptTurns
 import com.ai.assistance.operit.core.config.SystemPromptConfig
+import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.core.tools.AIToolHandler
 import com.ai.assistance.operit.core.tools.packTool.PackageManager
 import com.ai.assistance.operit.data.model.AITool
 import com.ai.assistance.operit.data.model.FunctionType
+import com.ai.assistance.operit.data.model.ModelParameter
 import com.ai.assistance.operit.data.model.PreferenceProfile
 import com.ai.assistance.operit.data.model.ToolParameter
 import com.ai.assistance.operit.core.tools.UIPageResultData
@@ -111,18 +116,79 @@ class ConversationService(
     ): String {
         try {
             val useEnglish = LocaleUtils.getCurrentLanguage(context).lowercase().startsWith("en")
-            val systemPrompt = FunctionalPrompts.buildSummarySystemPrompt(previousSummary, useEnglish)
+            val activePromptMetadata = buildActivePromptHookMetadata(context)
+            var systemPrompt = FunctionalPrompts.buildSummarySystemPrompt(previousSummary, useEnglish)
             val sanitizedMessages = ChatUtils.stripGeminiThoughtSignatureMetaTurns(messages)
-
-            val finalMessages =
-                listOf(PromptTurn(kind = PromptTurnKind.SYSTEM, content = systemPrompt)) +
-                    sanitizedMessages
 
             // Get all model parameters from preferences (with enabled state)
             val modelParameters = multiServiceManager.getModelParametersForFunction(FunctionType.SUMMARY)
+            val serializedModelParameters = serializeSummaryHookModelParameters(modelParameters)
 
             // 获取SUMMARY功能类型的AIService实例
             val summaryService = multiServiceManager.getServiceForFunction(FunctionType.SUMMARY)
+            var summaryHistory = sanitizedMessages
+            var summaryPrompt = FunctionalPrompts.summaryUserMessage(useEnglish)
+            val baseSummaryMetadata =
+                mapOf(
+                    "providerModel" to summaryService.providerModel,
+                    "sourceMessageCount" to summaryHistory.size
+                ) + activePromptMetadata
+
+            val beforePrepareContext =
+                SummaryHookRegistry.dispatchSummaryGenerateHooks(
+                    SummaryHookContext(
+                        stage = "before_prepare_summary_prompt",
+                        useEnglish = useEnglish,
+                        previousSummary = previousSummary,
+                        chatHistory = summaryHistory,
+                        systemPrompt = systemPrompt,
+                        summaryPrompt = summaryPrompt,
+                        modelParameters = serializedModelParameters,
+                        metadata = baseSummaryMetadata
+                    )
+                )
+            summaryHistory = beforePrepareContext.chatHistory
+            systemPrompt = beforePrepareContext.systemPrompt ?: systemPrompt
+            summaryPrompt = beforePrepareContext.summaryPrompt ?: summaryPrompt
+            var preparedHistory =
+                beforePrepareContext.preparedHistory.takeIf { it.isNotEmpty() }
+                    ?: buildSummaryPreparedHistory(
+                        systemPrompt = systemPrompt,
+                        chatHistory = summaryHistory,
+                        summaryPrompt = summaryPrompt
+                    )
+
+            val beforeSendBasePreparedHistory = preparedHistory
+            val beforeSendContext =
+                SummaryHookRegistry.dispatchSummaryGenerateHooks(
+                    SummaryHookContext(
+                        stage = "before_send_to_model",
+                        useEnglish = useEnglish,
+                        previousSummary = previousSummary,
+                        chatHistory = summaryHistory,
+                        preparedHistory = preparedHistory,
+                        systemPrompt = systemPrompt,
+                        summaryPrompt = summaryPrompt,
+                        modelParameters = serializedModelParameters,
+                        metadata =
+                            baseSummaryMetadata + mapOf(
+                                "preparedMessageCount" to preparedHistory.size
+                            )
+                    )
+                )
+            summaryHistory = beforeSendContext.chatHistory
+            systemPrompt = beforeSendContext.systemPrompt ?: systemPrompt
+            summaryPrompt = beforeSendContext.summaryPrompt ?: summaryPrompt
+            preparedHistory =
+                if (beforeSendContext.preparedHistory != beforeSendBasePreparedHistory) {
+                    beforeSendContext.preparedHistory
+                } else {
+                    buildSummaryPreparedHistory(
+                        systemPrompt = systemPrompt,
+                        chatHistory = summaryHistory,
+                        summaryPrompt = summaryPrompt
+                    )
+                }
 
             // 使用summaryService发送请求，收集完整响应
             val contentBuilder = StringBuilder()
@@ -193,11 +259,7 @@ class ConversationService(
             val stream =
                     summaryService.sendMessage(
                             context = context,
-                            chatHistory =
-                                finalMessages + PromptTurn(
-                                    kind = PromptTurnKind.USER,
-                                    content = FunctionalPrompts.summaryUserMessage(useEnglish)
-                                ),
+                            chatHistory = preparedHistory,
                             modelParameters = modelParameters
                     )
 
@@ -214,17 +276,40 @@ class ConversationService(
             )
 
             // 获取完整的总结内容
-            val summaryContent = ChatUtils.removeThinkingContent(contentBuilder.toString().trim())
-
-            // 如果内容为空，返回默认消息
-            if (summaryContent.isBlank()) {
-                return "Conversation Summary: Unable to generate valid summary."
-            }
+            var summaryContent = ChatUtils.removeThinkingContent(contentBuilder.toString().trim())
 
             // 获取本次总结生成的token统计
             val inputTokens = summaryService.inputTokenCount
             val cachedInputTokens = summaryService.cachedInputTokenCount
             val outputTokens = summaryService.outputTokenCount
+
+            val afterGenerateContext =
+                SummaryHookRegistry.dispatchSummaryGenerateHooks(
+                    SummaryHookContext(
+                        stage = "after_generate_summary",
+                        useEnglish = useEnglish,
+                        previousSummary = previousSummary,
+                        chatHistory = summaryHistory,
+                        preparedHistory = preparedHistory,
+                        systemPrompt = systemPrompt,
+                        summaryPrompt = summaryPrompt,
+                        summaryResult = summaryContent,
+                        modelParameters = serializedModelParameters,
+                        metadata =
+                            baseSummaryMetadata + mapOf(
+                                "preparedMessageCount" to preparedHistory.size,
+                                "inputTokens" to inputTokens,
+                                "cachedInputTokens" to cachedInputTokens,
+                                "outputTokens" to outputTokens
+                            )
+                    )
+                )
+            summaryContent = afterGenerateContext.summaryResult ?: summaryContent
+
+            // 如果内容为空，返回默认消息
+            if (summaryContent.isBlank()) {
+                return "Conversation Summary: Unable to generate valid summary."
+            }
 
             // 将总结token计数添加到用户偏好分析的token统计中
             try {
@@ -244,6 +329,40 @@ class ConversationService(
             AppLogger.e(TAG, "生成总结时出错", e)
             // return "对话摘要：生成摘要时出错，但对话仍在继续。"
             throw e
+        }
+    }
+
+    private fun buildSummaryPreparedHistory(
+        systemPrompt: String,
+        chatHistory: List<PromptTurn>,
+        summaryPrompt: String
+    ): List<PromptTurn> {
+        return listOf(PromptTurn(kind = PromptTurnKind.SYSTEM, content = systemPrompt)) +
+            chatHistory +
+            PromptTurn(
+                kind = PromptTurnKind.USER,
+                content = summaryPrompt
+            )
+    }
+
+    private fun serializeSummaryHookModelParameters(
+        modelParameters: List<ModelParameter<*>>
+    ): List<Map<String, Any?>> {
+        return modelParameters.map { parameter ->
+            mapOf(
+                "id" to parameter.id,
+                "name" to parameter.name,
+                "apiName" to parameter.apiName,
+                "description" to parameter.description,
+                "defaultValue" to parameter.defaultValue,
+                "currentValue" to parameter.currentValue,
+                "isEnabled" to parameter.isEnabled,
+                "valueType" to parameter.valueType.name,
+                "minValue" to parameter.minValue,
+                "maxValue" to parameter.maxValue,
+                "category" to parameter.category.name,
+                "isCustom" to parameter.isCustom
+            )
         }
     }
 
@@ -277,11 +396,13 @@ class ConversationService(
             chatModelHasDirectVideo: Boolean = false,
             useToolCallApi: Boolean = false,
             chatModelHasDirectImage: Boolean = false,
+            toolExposureMode: ToolExposureMode = ToolExposureMode.FULL,
             preferenceProfileIdOverride: String? = null,
             dispatchHistoryHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchPromptHistoryHooks,
             dispatchSystemPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchSystemPromptComposeHooks,
             dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
     ): List<PromptTurn> {
+        val activePromptMetadata = buildActivePromptHookMetadata(context, chatId, roleCardId)
         val beforeContext =
             dispatchHistoryHooks(
                 PromptHookContext(
@@ -295,7 +416,6 @@ class ConversationService(
                             "workspacePath" to workspacePath,
                             "workspaceEnv" to workspaceEnv,
                             "customSystemPromptTemplate" to customSystemPromptTemplate,
-                            "roleCardId" to roleCardId,
                             "enableGroupOrchestrationHint" to enableGroupOrchestrationHint,
                             "groupParticipantNamesText" to groupParticipantNamesText,
                             "proxySenderName" to proxySenderName,
@@ -305,8 +425,9 @@ class ConversationService(
                             "chatModelHasDirectAudio" to chatModelHasDirectAudio,
                             "chatModelHasDirectVideo" to chatModelHasDirectVideo,
                             "useToolCallApi" to useToolCallApi,
-                            "chatModelHasDirectImage" to chatModelHasDirectImage
-                        )
+                            "chatModelHasDirectImage" to chatModelHasDirectImage,
+                            "toolExposureMode" to toolExposureMode.name
+                        ) + activePromptMetadata
                 )
             )
         val effectiveChatHistory = beforeContext.chatHistory
@@ -374,6 +495,7 @@ class ConversationService(
                 val systemPrompt = SystemPromptConfig.getSystemPromptWithCustomPrompts(
                     context = context,
                     packageManager = packageManager,
+                    chatId = chatId,
                     workspacePath = workspacePath,
                     workspaceEnv = workspaceEnv,
                     safBookmarkNames = safBookmarkNames,
@@ -388,6 +510,7 @@ class ConversationService(
                     chatModelHasDirectAudio = chatModelHasDirectAudio,
                     chatModelHasDirectVideo = chatModelHasDirectVideo,
                     useToolCallApi = useToolCallApi,
+                    toolExposureMode = toolExposureMode,
                     toolVisibility = roleCardToolAccess.effectiveBuiltinToolVisibility,
                     allowedPackageNames = roleCardToolAccess.allowedPackageNames,
                     allowedSkillNames = roleCardToolAccess.allowedSkillNames,
@@ -396,6 +519,7 @@ class ConversationService(
                     groupOrchestrationRoleName = activeCard?.name?.takeIf { it.isNotBlank() }
                         ?: context.getString(R.string.app_name),
                     groupParticipantNamesText = groupParticipantNamesText.orEmpty(),
+                    hookMetadata = activePromptMetadata,
                     dispatchSystemPromptComposeHooks = dispatchSystemPromptComposeHooks,
                     dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
                 )
@@ -914,7 +1038,6 @@ class ConversationService(
     private suspend fun replacePromptPlaceholders(prompt: String, aiName: String): String {
         var finalPrompt = prompt
         
-        // 获取全局用户名
         val globalUserName = displayPreferencesManager.globalUserName.first() ?: "User"
         
         // 替换占位符
@@ -937,8 +1060,11 @@ class ConversationService(
         val targetLanguage = when (currentLanguage) {
             LocaleUtils.LanguageCodes.CHINESE -> context.getString(R.string.conversation_language_chinese)
             LocaleUtils.LanguageCodes.ENGLISH -> "English"
+            LocaleUtils.LanguageCodes.KOREAN -> "Korean"
+            LocaleUtils.LanguageCodes.SPANISH -> "Spanish"
             LocaleUtils.LanguageCodes.MALAY -> "Malay"
             LocaleUtils.LanguageCodes.INDONESIAN -> "Indonesian"
+            LocaleUtils.LanguageCodes.PORTUGUESE_BRAZIL -> "Portuguese (Brazil)"
             else -> context.getString(R.string.conversation_language_chinese) // 默认翻译为中文
         }
         

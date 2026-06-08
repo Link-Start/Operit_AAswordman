@@ -30,6 +30,12 @@ interface MessageDao {
     @Query(
         """
         SELECT
+            (
+                SELECT COUNT(*)
+                FROM messages AS earlier
+                WHERE earlier.chatId = messages.chatId
+                    AND earlier.timestamp < messages.timestamp
+            ) AS messageIndex,
             timestamp AS timestamp,
             sender AS sender,
             CASE
@@ -40,7 +46,8 @@ interface MessageDao {
                 WHEN sender = 'user' AND displayMode = 'HIDDEN_PLACEHOLDER' THEN 0
                 ELSE LENGTH(content)
             END AS contentLength,
-            displayMode AS displayMode
+            displayMode AS displayMode,
+            isFavorite AS isFavorite
         FROM messages
         WHERE chatId = :chatId
         ORDER BY timestamp ASC
@@ -48,6 +55,38 @@ interface MessageDao {
     )
     suspend fun getLocatorPreviewsForChat(
         chatId: String,
+        previewCharCount: Int,
+    ): List<ChatMessageLocatorPreview>
+
+    @Query(
+        """
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM messages AS earlier
+                WHERE earlier.chatId = messages.chatId
+                    AND earlier.timestamp < messages.timestamp
+            ) AS messageIndex,
+            timestamp AS timestamp,
+            sender AS sender,
+            SUBSTR(
+                content,
+                MAX(1, INSTR(LOWER(content), LOWER(:query)) - (:previewCharCount / 2)),
+                :previewCharCount
+            ) AS previewContent,
+            LENGTH(content) AS contentLength,
+            displayMode AS displayMode,
+            isFavorite AS isFavorite
+        FROM messages
+        WHERE chatId = :chatId
+            AND NOT (sender = 'user' AND displayMode = 'HIDDEN_PLACEHOLDER')
+            AND INSTR(LOWER(content), LOWER(:query)) > 0
+        ORDER BY timestamp ASC
+        """
+    )
+    suspend fun searchLocatorPreviewsForChat(
+        chatId: String,
+        query: String,
         previewCharCount: Int,
     ): List<ChatMessageLocatorPreview>
 
@@ -195,7 +234,9 @@ interface MessageDao {
             sentAt,
             outputDurationMs,
             waitDurationMs,
-            displayMode
+            completedAt,
+            displayMode,
+            isFavorite
         )
         SELECT
             :targetChatId,
@@ -213,7 +254,9 @@ interface MessageDao {
             sentAt,
             outputDurationMs,
             waitDurationMs,
-            displayMode
+            completedAt,
+            displayMode,
+            isFavorite
         FROM messages
         WHERE chatId = :sourceChatId
             AND (:upToTimestampInclusive IS NULL OR timestamp <= :upToTimestampInclusive)
@@ -259,6 +302,15 @@ interface MessageDao {
         chatId: String,
         timestamp: Long,
         selectedVariantIndex: Int,
+    )
+
+    @Query(
+        "UPDATE messages SET isFavorite = :isFavorite WHERE chatId = :chatId AND timestamp = :timestamp"
+    )
+    suspend fun updateMessageFavorite(
+        chatId: String,
+        timestamp: Long,
+        isFavorite: Boolean,
     )
 
     /** 查找包含特定关键词的聊天ID列表（不重复） */

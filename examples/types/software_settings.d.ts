@@ -27,7 +27,7 @@ import {
  */
 export namespace SoftwareSettings {
     interface SpeechServicesUpdateOptions {
-        tts_service_type?: 'SIMPLE_TTS' | 'HTTP_TTS' | 'OPENAI_WS_TTS' | 'SILICONFLOW_TTS' | 'MINIMAX_TTS' | 'OPENAI_TTS';
+        tts_service_type?: 'SIMPLE_TTS' | 'HTTP_TTS' | 'OPENAI_WS_TTS' | 'SILICONFLOW_TTS' | 'MINIMAX_TTS' | 'MIMO_TTS' | 'DOUBAO_TTS' | 'OPENAI_TTS' | 'VITS_TTS';
         tts_url_template?: string;
         tts_api_key?: string;
         tts_headers?: string | Record<string, string>;
@@ -35,8 +35,12 @@ export namespace SoftwareSettings {
         tts_request_body?: string;
         tts_content_type?: string;
         tts_locale?: string;
+        /** TTS voice id. For MIMO voiceclone, use the full data:audio/...;base64,... audio sample. */
         tts_voice_id?: string;
         tts_model_name?: string;
+        tts_vits_package_path?: string;
+        tts_vits_speaker_id?: string;
+        tts_vits_options?: string | Record<string, string>;
         tts_response_pipeline?: string | Array<{
             type: string;
             path?: string;
@@ -66,9 +70,53 @@ export namespace SoftwareSettings {
         wait_ms?: number | string;
     }
 
+    /**
+     * Known model-config provider enum names.
+     * `LMSTUDIO`, `OLLAMA`, `OPENAI_LOCAL`, `MNN`, and `LLAMA_CPP` are local-model providers.
+     * Custom provider ids are also allowed.
+     */
+    type ModelConfigProviderType =
+        | 'OPENAI'
+        | 'OPENAI_RESPONSES'
+        | 'OPENAI_RESPONSES_GENERIC'
+        | 'OPENAI_GENERIC'
+        | 'ANTHROPIC'
+        | 'ANTHROPIC_GENERIC'
+        | 'GOOGLE'
+        | 'GEMINI_GENERIC'
+        | 'BAIDU'
+        | 'ALIYUN'
+        | 'XUNFEI'
+        | 'ZHIPU'
+        | 'BAICHUAN'
+        | 'MOONSHOT'
+        | 'DEEPSEEK'
+        | 'MISTRAL'
+        | 'SILICONFLOW'
+        | 'IFLOW'
+        | 'OPENROUTER'
+        | 'FOUR_ROUTER'
+        | 'NOUS_PORTAL'
+        | 'INFINIAI'
+        | 'ALIPAY_BAILING'
+        | 'DOUBAO'
+        | 'NVIDIA'
+        | 'LMSTUDIO'
+        | 'OLLAMA'
+        | 'OPENAI_LOCAL'
+        | 'MNN'
+        | 'LLAMA_CPP'
+        | 'PPINFRA'
+        | 'NOVITA'
+        | 'OTHER'
+        | (string & {});
+
     interface ModelConfigUpdateOptions {
         name?: string;
-        api_provider_type?: string;
+        /**
+         * Provider enum name, for example `OPENAI_GENERIC`, `OPENAI_LOCAL`, `LMSTUDIO`, `OLLAMA`, `MNN`, or `LLAMA_CPP`.
+         */
+        api_provider_type?: ModelConfigProviderType;
         api_endpoint?: string;
         api_key?: string;
         model_name?: string;
@@ -99,6 +147,7 @@ export namespace SoftwareSettings {
         enable_direct_audio_processing?: boolean;
         enable_direct_video_processing?: boolean;
         enable_google_search?: boolean;
+        enable_claude_1h_prompt_cache?: boolean;
         enable_tool_call?: boolean;
         mnn_forward_type?: number;
         mnn_thread_count?: number;

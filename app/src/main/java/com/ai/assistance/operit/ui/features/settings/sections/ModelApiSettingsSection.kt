@@ -134,6 +134,11 @@ fun ModelApiSettingsSection(
     
     // Google Search Grounding 配置状态 (仅Gemini)
     var enableGoogleSearchInput by remember(config.id) { mutableStateOf(config.enableGoogleSearch) }
+
+    // Claude 1小时提示缓存配置状态 (仅Claude)
+    var enableClaude1hPromptCacheInput by remember(config.id) {
+        mutableStateOf(config.enableClaude1hPromptCache)
+    }
     
     // Tool Call配置状态
     var enableToolCallInput by remember(config.id) { mutableStateOf(config.enableToolCall) }
@@ -153,6 +158,7 @@ fun ModelApiSettingsSection(
         val enableDirectAudioProcessing: Boolean,
         val enableDirectVideoProcessing: Boolean,
         val enableGoogleSearch: Boolean,
+        val enableClaude1hPromptCache: Boolean,
         val enableToolCall: Boolean,
     )
 
@@ -176,6 +182,7 @@ fun ModelApiSettingsSection(
                     enableDirectAudioProcessing = state.enableDirectAudioProcessing,
                     enableDirectVideoProcessing = state.enableDirectVideoProcessing,
                     enableGoogleSearch = state.enableGoogleSearch,
+                    enableClaude1hPromptCache = state.enableClaude1hPromptCache,
                     enableToolCall = state.enableToolCall,
                 )
 
@@ -202,6 +209,7 @@ fun ModelApiSettingsSection(
             enableDirectAudioProcessing = enableDirectAudioProcessingInput,
             enableDirectVideoProcessing = enableDirectVideoProcessingInput,
             enableGoogleSearch = enableGoogleSearchInput,
+            enableClaude1hPromptCache = enableClaude1hPromptCacheInput,
             enableToolCall = enableToolCallInput,
         )
     }
@@ -338,6 +346,19 @@ fun ModelApiSettingsSection(
     val isMnnProvider = selectedApiProvider == ApiProviderType.MNN
     val isLlamaProvider = selectedApiProvider == ApiProviderType.LLAMA_CPP
     val isToolPkgProvider = selectedApiProvider == null
+    val canUseKeylessModelUi = isToolPkgProvider || !providerRequiresApiKey
+    val canEditModelName =
+        !isMnnProvider &&
+            !isLlamaProvider &&
+            (canUseKeylessModelUi || !isUsingDefaultApiKey)
+    val canRequestModelList =
+        isToolPkgProvider ||
+            isMnnProvider ||
+            isLlamaProvider ||
+            (
+                apiEndpointInput.isNotBlank() &&
+                    (!providerRequiresApiKey || (!isUsingDefaultApiKey && apiKeyInput.isNotBlank()))
+            )
     val endpointOptions = getEndpointOptions(selectedProviderTypeId)
     val selectableEndpointOptions =
         when {
@@ -371,6 +392,7 @@ fun ModelApiSettingsSection(
                                 enableDirectAudioProcessing = enableDirectAudioProcessingInput,
                                 enableDirectVideoProcessing = enableDirectVideoProcessingInput,
                                 enableGoogleSearch = enableGoogleSearchInput,
+                                enableClaude1hPromptCache = enableClaude1hPromptCacheInput,
                                 enableToolCall = enableToolCallInput
                             ),
                         modelConfigManager = configManager,
@@ -611,11 +633,11 @@ fun ModelApiSettingsSection(
                     },
                         value = modelNameInput,
                         onValueChange = {
-                        if (!isMnnProvider && !isLlamaProvider && (!isUsingDefaultApiKey || isToolPkgProvider)) {
+                        if (canEditModelName) {
                                 modelNameInput = it.replace("\n", "").replace("\r", "")
                             }
                         },
-                    enabled = if (isMnnProvider || isLlamaProvider) false else (!isUsingDefaultApiKey || isToolPkgProvider),
+                    enabled = !isMnnProvider && !isLlamaProvider && canEditModelName,
                     trailingContent = {
                 IconButton(
                         onClick = {
@@ -633,17 +655,7 @@ fun ModelApiSettingsSection(
                             showNotification(gettingModelsText)
 
                             scope.launch {
-                                val canRequestModels =
-                                    isToolPkgProvider ||
-                                        isMnnProvider ||
-                                        isLlamaProvider ||
-                                        (
-                                            apiEndpointInput.isNotBlank() &&
-                                                !isUsingDefaultApiKey &&
-                                                (!providerRequiresApiKey || apiKeyInput.isNotBlank())
-                                        )
-
-                                if (canRequestModels) {
+                                if (canRequestModelList) {
                                     isLoadingModels = true
                                     modelLoadError = null
                                     AppLogger.d(
@@ -674,7 +686,7 @@ fun ModelApiSettingsSection(
                                         isLoadingModels = false
                                         AppLogger.d(TAG, "模型列表获取流程完成")
                                     }
-                                } else if (!isToolPkgProvider && isUsingDefaultApiKey) {
+                                } else if (!isToolPkgProvider && isUsingDefaultApiKey && providerRequiresApiKey) {
                                     AppLogger.d(TAG, "使用默认配置，不获取模型列表")
                                     showNotification(defaultConfigNoModelsText)
                                 } else {
@@ -688,7 +700,7 @@ fun ModelApiSettingsSection(
                                 IconButtonDefaults.iconButtonColors(
                                         contentColor = MaterialTheme.colorScheme.primary
                                 ),
-                                enabled = if (isMnnProvider || isLlamaProvider) true else (!isUsingDefaultApiKey || isToolPkgProvider)
+                                enabled = canRequestModelList
                 ) {
                     if (isLoadingModels) {
                         CircularProgressIndicator(
@@ -700,7 +712,7 @@ fun ModelApiSettingsSection(
                                 imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
                                 contentDescription = stringResource(R.string.get_models_list),
                                 tint =
-                                                if (!isMnnProvider && !isLlamaProvider && isUsingDefaultApiKey && !isToolPkgProvider)
+                                                if (!canRequestModelList && !isToolPkgProvider)
                                                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                                                 else MaterialTheme.colorScheme.primary
                                 )
@@ -737,6 +749,17 @@ fun ModelApiSettingsSection(
                         subtitle = stringResource(R.string.enable_google_search_desc),
                             checked = enableGoogleSearchInput,
                             onCheckedChange = { enableGoogleSearchInput = it }
+                    )
+            }
+
+            // Claude 1小时提示缓存开关 (仅Claude支持)
+            if (selectedApiProvider == ApiProviderType.ANTHROPIC ||
+                selectedApiProvider == ApiProviderType.ANTHROPIC_GENERIC) {
+                SettingsSwitchRow(
+                        title = stringResource(R.string.enable_claude_1h_prompt_cache),
+                        subtitle = stringResource(R.string.enable_claude_1h_prompt_cache_desc),
+                        checked = enableClaude1hPromptCacheInput,
+                        onCheckedChange = { enableClaude1hPromptCacheInput = it }
                     )
             }
             
@@ -792,16 +815,7 @@ fun ModelApiSettingsSection(
                         FilledIconButton(
                                 onClick = {
                                     scope.launch {
-                                        val canRequestModels =
-                                            isToolPkgProvider ||
-                                                isMnnProvider ||
-                                                isLlamaProvider ||
-                                                (
-                                                    apiEndpointInput.isNotBlank() &&
-                                                        !isUsingDefaultApiKey &&
-                                                        (!providerRequiresApiKey || apiKeyInput.isNotBlank())
-                                                )
-                                        if (canRequestModels) {
+                                        if (canRequestModelList) {
                                             isLoadingModels = true
                                             try {
                                                 val result = fetchAvailableModels()
@@ -1053,6 +1067,7 @@ private fun getBuiltInProviderDisplayName(provider: ApiProviderType, context: an
         ApiProviderType.ZHIPU -> context.getString(R.string.provider_zhipu)
         ApiProviderType.BAICHUAN -> context.getString(R.string.provider_baichuan)
         ApiProviderType.MOONSHOT -> context.getString(R.string.provider_moonshot)
+        ApiProviderType.MIMO -> context.getString(R.string.provider_mimo)
         ApiProviderType.DEEPSEEK -> context.getString(R.string.provider_deepseek)
         ApiProviderType.MISTRAL -> context.getString(R.string.provider_mistral)
         ApiProviderType.SILICONFLOW -> context.getString(R.string.provider_siliconflow)
@@ -1066,6 +1081,7 @@ private fun getBuiltInProviderDisplayName(provider: ApiProviderType, context: an
         ApiProviderType.NVIDIA -> context.getString(R.string.provider_nvidia)
         ApiProviderType.LMSTUDIO -> context.getString(R.string.provider_lmstudio)
         ApiProviderType.OLLAMA -> context.getString(R.string.provider_ollama)
+        ApiProviderType.OPENAI_LOCAL -> context.getString(R.string.provider_openai_local)
         ApiProviderType.MNN -> context.getString(R.string.provider_mnn)
         ApiProviderType.LLAMA_CPP -> context.getString(R.string.provider_llama_cpp)
         ApiProviderType.PPINFRA -> context.getString(R.string.provider_ppinfra)
@@ -1707,6 +1723,7 @@ private fun getProviderColor(providerTypeId: String): androidx.compose.ui.graphi
         ApiProviderType.ZHIPU -> MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
         ApiProviderType.BAICHUAN -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f)
         ApiProviderType.MOONSHOT -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
+        ApiProviderType.MIMO -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.66f)
         ApiProviderType.DEEPSEEK -> MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
         ApiProviderType.MISTRAL -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.65f)
         ApiProviderType.SILICONFLOW -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.6f)
@@ -1720,6 +1737,7 @@ private fun getProviderColor(providerTypeId: String): androidx.compose.ui.graphi
         ApiProviderType.NVIDIA -> MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
         ApiProviderType.LMSTUDIO -> MaterialTheme.colorScheme.tertiary
         ApiProviderType.OLLAMA -> MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
+        ApiProviderType.OPENAI_LOCAL -> MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
         ApiProviderType.MNN -> MaterialTheme.colorScheme.secondary
         ApiProviderType.LLAMA_CPP -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.9f)
         ApiProviderType.PPINFRA -> MaterialTheme.colorScheme.primaryContainer

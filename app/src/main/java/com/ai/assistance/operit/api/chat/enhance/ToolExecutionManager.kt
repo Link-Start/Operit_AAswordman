@@ -4,15 +4,16 @@ import android.content.Context
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.core.tools.AIToolHandler
+import com.ai.assistance.operit.core.tools.AIToolHookDecision
 import com.ai.assistance.operit.core.tools.StringResultData
 import com.ai.assistance.operit.core.tools.ToolExecutor
+import com.ai.assistance.operit.core.tools.climode.CliToolModeSupport
+import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.data.model.ToolInvocation
 import com.ai.assistance.operit.data.model.ToolResult
 import com.ai.assistance.operit.core.tools.packTool.PackageManager
 import com.ai.assistance.operit.util.stream.StreamCollector
-import com.ai.assistance.operit.data.model.CharacterCardMemoryProfileBindingMode
 import com.ai.assistance.operit.data.preferences.CharacterCardToolAccessResolver
-import com.ai.assistance.operit.data.preferences.CharacterCardManager
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asContextElement
@@ -26,6 +27,7 @@ import com.ai.assistance.operit.util.ChatMarkupRegex
 import com.ai.assistance.operit.util.stream.plugins.StreamXmlPlugin
 import com.ai.assistance.operit.util.stream.splitBy
 import com.ai.assistance.operit.util.stream.stream
+import com.ai.assistance.operit.util.LocaleUtils
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -44,7 +46,7 @@ object ToolExecutionManager {
 
     data class ToolRuntimeContext(
         val callerCardId: String? = null,
-        val memoryProfileId: String? = null
+        val toolExposureMode: ToolExposureMode = ToolExposureMode.FULL
     )
 
     private data class ResolvedToolTarget(
@@ -57,7 +59,9 @@ object ToolExecutionManager {
     }
 
     private fun resolveToolTarget(tool: AITool): ResolvedToolTarget {
-        if (tool.name != PACKAGE_PROXY_TOOL_NAME) {
+        if (tool.name != PACKAGE_PROXY_TOOL_NAME &&
+            tool.name != CliToolModeSupport.PROXY_TOOL_NAME
+        ) {
             return ResolvedToolTarget(tool = tool, displayName = tool.name)
         }
 
@@ -141,8 +145,15 @@ object ToolExecutionManager {
         roleCardToolAccess: com.ai.assistance.operit.data.preferences.ResolvedCharacterCardToolAccess
     ): Boolean {
         val toolName = invocation.tool.name.trim()
+        val resolvedTarget = resolveToolTarget(invocation.tool).tool
 
         return when {
+            toolName == CliToolModeSupport.SEARCH_TOOL_NAME -> true
+
+            toolName == CliToolModeSupport.PROXY_TOOL_NAME -> {
+                isResolvedTargetAllowedForRoleCard(resolvedTarget, roleCardToolAccess)
+            }
+
             toolName == "use_package" -> {
                 if (!roleCardToolAccess.isBuiltinToolAllowed("use_package")) {
                     false
@@ -156,12 +167,11 @@ object ToolExecutionManager {
                 if (!roleCardToolAccess.isBuiltinToolAllowed("package_proxy")) {
                     false
                 } else {
-                    val resolvedTarget = resolveToolTarget(invocation.tool).tool.name.trim()
-                    if (resolvedTarget.isBlank() || !resolvedTarget.contains(':')) {
+                    val resolvedTargetName = resolvedTarget.name.trim()
+                    if (resolvedTargetName.isBlank() || !resolvedTargetName.contains(':')) {
                         true
                     } else {
-                        val sourceName = resolvedTarget.substringBefore(':').trim()
-                        sourceName.isBlank() || roleCardToolAccess.isExternalSourceAllowed(sourceName)
+                        isResolvedTargetAllowedForRoleCard(resolvedTarget, roleCardToolAccess)
                     }
                 }
             }
@@ -187,26 +197,73 @@ object ToolExecutionManager {
         )
     }
 
-    private suspend fun resolveRoleCardMemoryProfileId(
+    private fun isEnglishLanguage(context: Context): Boolean {
+        return LocaleUtils.getCurrentLanguage(context).lowercase().startsWith("en")
+    }
+
+    private fun buildToolExposureDeniedResult(
         context: Context,
-        callerCardId: String?
-    ): String? {
-        val resolvedCardId = callerCardId?.takeIf { it.isNotBlank() } ?: return null
-        val characterCard =
-            CharacterCardManager.getInstance(context).getCharacterCardFlow(resolvedCardId).first()
-        val bindingMode =
-            CharacterCardMemoryProfileBindingMode.normalize(
-                characterCard.memoryProfileBindingMode
-            )
-        val boundProfileId = characterCard.memoryProfileId?.takeIf { it.isNotBlank() }
-        return if (
-            bindingMode == CharacterCardMemoryProfileBindingMode.FIXED_PROFILE &&
-            boundProfileId != null
-        ) {
-            boundProfileId
-        } else {
-            null
+        invocation: ToolInvocation,
+        toolExposureMode: ToolExposureMode
+    ): ToolResult? {
+        val toolName = invocation.tool.name.trim()
+        val useEnglish = isEnglishLanguage(context)
+        val errorMessage =
+            when {
+                toolExposureMode == ToolExposureMode.CLI &&
+                    !CliToolModeSupport.isCliPublicTool(toolName) -> {
+                    CliToolModeSupport.buildCliTopLevelRestrictionErrorMessage(
+                        attemptedToolName = resolveDisplayToolName(invocation.tool),
+                        useEnglish = useEnglish
+                    )
+                }
+
+                toolExposureMode == ToolExposureMode.FULL &&
+                    CliToolModeSupport.isCliPublicTool(toolName) -> {
+                    CliToolModeSupport.buildCliModeUnavailableMessage(useEnglish)
+                }
+
+                else -> null
+            } ?: return null
+
+        val resultToolName =
+            if (toolExposureMode == ToolExposureMode.CLI &&
+                !CliToolModeSupport.isCliPublicTool(toolName)
+            ) {
+                resolveDisplayToolName(invocation.tool)
+            } else {
+                toolName
+            }
+
+        return ToolResult(
+            toolName = resultToolName,
+            success = false,
+            result = StringResultData(""),
+            error = errorMessage
+        )
+    }
+
+    private fun isResolvedTargetAllowedForRoleCard(
+        resolvedTarget: AITool,
+        roleCardToolAccess: com.ai.assistance.operit.data.preferences.ResolvedCharacterCardToolAccess
+    ): Boolean {
+        val resolvedTargetName = resolvedTarget.name.trim()
+        if (resolvedTargetName.isBlank()) {
+            return true
         }
+
+        val usePackageSourceName =
+            if (resolvedTargetName == "use_package") {
+                getParameterValue(resolvedTarget, "package_name")
+            } else {
+                null
+            }
+
+        return CliToolModeSupport.isToolNameAllowedForRoleCard(
+            toolName = resolvedTargetName,
+            usePackageSourceName = usePackageSourceName,
+            roleCardToolAccess = roleCardToolAccess
+        )
     }
 
     private fun resolveProxyParameters(tool: AITool): List<ToolParameter> {
@@ -364,10 +421,30 @@ object ToolExecutionManager {
      */
     suspend fun checkToolPermission(
         toolHandler: AIToolHandler,
-        invocation: ToolInvocation
+        invocation: ToolInvocation,
+        toolExposureMode: ToolExposureMode = ToolExposureMode.FULL
     ): Pair<Boolean, ToolResult?> {
         val resolvedTarget = resolveToolTarget(invocation.tool)
-        val permissionTool = resolvedTarget.tool
+        val permissionTool =
+            if (toolExposureMode == ToolExposureMode.CLI &&
+                invocation.tool.name == CliToolModeSupport.PROXY_TOOL_NAME
+            ) {
+                invocation.tool
+            } else {
+                resolvedTarget.tool
+            }
+
+        if (toolExposureMode == ToolExposureMode.CLI &&
+            (invocation.tool.name == CliToolModeSupport.SEARCH_TOOL_NAME ||
+                invocation.tool.name == CliToolModeSupport.PROXY_TOOL_NAME)
+        ) {
+            toolHandler.notifyToolPermissionChecked(
+                permissionTool,
+                granted = true,
+                reason = "CLI public tool"
+            )
+            return Pair(true, null)
+        }
 
         // 检查是否强制拒绝权限（deny_tool标记）
         val hasPromptForPermission = !invocation.rawText.contains("deny_tool")
@@ -421,6 +498,7 @@ object ToolExecutionManager {
         toolHandler: AIToolHandler,
         packageManager: PackageManager,
         collector: StreamCollector<String>,
+        toolExposureMode: ToolExposureMode = ToolExposureMode.FULL,
         callerName: String? = null,
         callerChatId: String? = null,
         callerCardId: String? = null
@@ -445,13 +523,29 @@ object ToolExecutionManager {
         val toolRuntimeContext =
             ToolRuntimeContext(
                 callerCardId = callerCardId,
-                memoryProfileId = resolveRoleCardMemoryProfileId(context, callerCardId)
+                toolExposureMode = toolExposureMode
             )
 
-        // 1. 角色卡工具权限拦截（优先于权限弹窗与包自动激活）
+        // 1. 顶层工具暴露模式拦截
+        val toolExposurePermittedInvocations = mutableListOf<ToolInvocation>()
+        val toolExposureDeniedResults = mutableListOf<ToolResult>()
+        for (invocation in invocations) {
+            val deniedResult = buildToolExposureDeniedResult(context, invocation, toolExposureMode)
+            if (deniedResult == null) {
+                toolExposurePermittedInvocations.add(invocation)
+            } else {
+                toolExposureDeniedResults.add(deniedResult)
+                toolHandler.notifyToolExecutionResult(invocation.tool, deniedResult)
+                val toolResultStatusContent =
+                    ConversationMarkupManager.formatToolResultForMessage(deniedResult)
+                collector.emit(ensureEndsWithNewline(toolResultStatusContent))
+            }
+        }
+
+        // 2. 角色卡工具权限拦截（优先于权限弹窗与包自动激活）
         val roleCardPermittedInvocations = mutableListOf<ToolInvocation>()
         val roleCardDeniedResults = mutableListOf<ToolResult>()
-        for (invocation in invocations) {
+        for (invocation in toolExposurePermittedInvocations) {
             val deniedResult = if (roleCardToolAccess?.customEnabled == true &&
                 !isInvocationAllowedForRoleCard(invocation, roleCardToolAccess)
             ) {
@@ -471,19 +565,40 @@ object ToolExecutionManager {
             }
         }
 
-        // 2. 权限检查
+        // 3. Hook 拦截与权限检查
         val permittedInvocations = mutableListOf<ToolInvocation>()
+        val hookDeniedResults = mutableListOf<ToolResult>()
         val permissionDeniedResults = mutableListOf<ToolResult>()
         for (invocation in roleCardPermittedInvocations) {
             toolHandler.notifyToolCallRequested(invocation.tool)
-            val (hasPermission, errorResult) = checkToolPermission(toolHandler, invocation)
-            if (hasPermission) {
-                permittedInvocations.add(invocation)
-            } else {
-                errorResult?.let {
-                    permissionDeniedResults.add(it)
+            val interceptionTool = resolveToolTarget(invocation.tool).tool
+            when (val interception = toolHandler.checkToolInterception(interceptionTool)) {
+                AIToolHookDecision.Allow -> {
+                    val (hasPermission, errorResult) =
+                        checkToolPermission(toolHandler, invocation, toolExposureMode)
+                    if (hasPermission) {
+                        permittedInvocations.add(invocation)
+                    } else {
+                        errorResult?.let {
+                            permissionDeniedResults.add(it)
+                            val toolResultStatusContent =
+                                ConversationMarkupManager.formatToolResultForMessage(it)
+                            collector.emit(ensureEndsWithNewline(toolResultStatusContent))
+                        }
+                    }
+                }
+
+                is AIToolHookDecision.Block -> {
+                    val interceptedResult =
+                        toolHandler.buildToolInterceptionResult(
+                            resolveDisplayToolName(invocation.tool),
+                            interception
+                        )
+                    hookDeniedResults.add(interceptedResult)
+                    toolHandler.notifyToolExecutionResult(invocation.tool, interceptedResult)
+                    toolHandler.notifyToolExecutionFinished(invocation.tool)
                     val toolResultStatusContent =
-                        ConversationMarkupManager.formatToolResultForMessage(it)
+                        ConversationMarkupManager.formatToolResultForMessage(interceptedResult)
                     collector.emit(ensureEndsWithNewline(toolResultStatusContent))
                 }
             }
@@ -505,7 +620,7 @@ object ToolExecutionManager {
                 }
             }
 
-        // 3. 按并行/串行对工具进行分组
+        // 4. 按并行/串行对工具进行分组
         val parallelizableToolNames = setOf(
             "list_files", "read_file", "read_file_part", "read_file_full", "file_exists",
             "find_files", "file_info", "grep_code", "calculate", "ffmpeg_info",
@@ -517,7 +632,7 @@ object ToolExecutionManager {
             )
         }
 
-        // 4. 执行工具并收集聚合结果
+        // 5. 执行工具并收集聚合结果
         val executionResults = ConcurrentHashMap<ToolInvocation, ToolResult>()
 
         // 启动并行工具
@@ -551,11 +666,15 @@ object ToolExecutionManager {
         // 等待所有并行任务完成
         parallelJobs.awaitAll()
 
-        // 5. 按原始顺序重新排序结果
+        // 6. 按原始顺序重新排序结果
         val orderedAggregated = injectedInvocations.mapNotNull { executionResults[it] }
 
-        // 6. 组合所有结果并返回
-        roleCardDeniedResults + permissionDeniedResults + orderedAggregated
+        // 7. 组合所有结果并返回
+        toolExposureDeniedResults +
+            roleCardDeniedResults +
+            hookDeniedResults +
+            permissionDeniedResults +
+            orderedAggregated
     }
 
     /**

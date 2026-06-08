@@ -168,10 +168,22 @@ export namespace NativeInterface {
     function registerToolPkgXmlRenderPlugin(specJson: string): void;
 
     /**
+     * Resolve the persistent config directory for a package or toolpkg.
+     * Returns an absolute path under `/sdcard/Download/Operit/plugins/<id>`.
+     */
+    function getPluginConfigDir(pluginId: string): string;
+
+    /**
      * Register an input menu toggle plugin for current toolpkg main registration session.
      * @param specJson - JSON object string describing an input menu toggle plugin
      */
     function registerToolPkgInputMenuTogglePlugin(specJson: string): void;
+
+    /**
+     * Register a chat input hook for current toolpkg main registration session.
+     * @param specJson - JSON object string describing a chat input hook
+     */
+    function registerToolPkgChatInputHook(specJson: string): void;
 
     /**
      * Register an image from base64-encoded data into the global image pool

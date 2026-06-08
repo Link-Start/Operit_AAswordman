@@ -63,7 +63,7 @@ internal object JsNativeInterfaceDelegates {
             JsonElement.serializer(),
             buildJsonObject {
                 put("success", JsonPrimitive(false))
-                put("error", JsonPrimitive(message))
+                put("message", JsonPrimitive(message))
             }
         )
     }
@@ -119,7 +119,7 @@ internal object JsNativeInterfaceDelegates {
             buildJsonObject {
                 put("success", JsonPrimitive(result.success))
                 if (!result.success) {
-                    put("error", JsonPrimitive(result.error ?: "Unknown error"))
+                    put("message", JsonPrimitive(result.error.orEmpty()))
                 }
                 put("data", serializedData.data)
                 serializedData.dataType?.let { put("dataType", JsonPrimitive(it)) }
@@ -250,21 +250,21 @@ internal object JsNativeInterfaceDelegates {
     }
 
     fun importPackage(packageManager: PackageManager, packageName: String): String {
-        return guard("Error: package import failed", "Error importing package from JS: $packageName") {
+        return guard("package import failed", "Error importing package from JS: $packageName") {
             val normalized = normalizeNonBlank(packageName) ?: return@guard "Package name is required"
             packageManager.enablePackage(normalized)
         }
     }
 
     fun removePackage(packageManager: PackageManager, packageName: String): String {
-        return guard("Error: package removal failed", "Error removing package from JS: $packageName") {
+        return guard("package removal failed", "Error removing package from JS: $packageName") {
             val normalized = normalizeNonBlank(packageName) ?: return@guard "Package name is required"
             packageManager.disablePackage(normalized)
         }
     }
 
     fun usePackage(packageManager: PackageManager, packageName: String): String {
-        return guard("Error: package activation failed", "Error using package from JS: $packageName") {
+        return guard("package activation failed", "Error using package from JS: $packageName") {
             val normalized = normalizeNonBlank(packageName) ?: return@guard "Package name is required"
             packageManager.usePackage(normalized)
         }
@@ -374,6 +374,19 @@ internal object JsNativeInterfaceDelegates {
                 packageNameOrSubpackageId = target,
                 resourcePath = path
             ) ?: ""
+        }
+    }
+
+    fun getPluginConfigDir(
+        packageManager: PackageManager,
+        pluginId: String
+    ): String {
+        return guard(
+            fallback = "",
+            failureMessage = "Error resolving plugin config dir from JS: pluginId=$pluginId"
+        ) {
+            val target = normalizeNonBlank(pluginId) ?: return@guard ""
+            packageManager.getPluginConfigDirPath(target)
         }
     }
 
@@ -498,20 +511,13 @@ internal object JsNativeInterfaceDelegates {
     ): String {
         if (toolName.trim().isEmpty()) {
             AppLogger.e(TAG, "Tool name cannot be empty")
-            return "Error: Tool name cannot be empty"
+            return buildToolErrorJson("Tool name cannot be empty")
         }
 
         return try {
             val parsed = parseToolCall(toolType, toolName, paramsJson)
-            AppLogger.d(TAG, "[Sync] JavaScript tool call: ${parsed.fullToolName} with params: ${parsed.params}")
             val result = toolHandler.executeTool(parsed.aiTool)
-            if (result.success) {
-                val resultString = result.result.toString()
-                AppLogger.d(
-                    TAG,
-                    "[Sync] Tool execution succeeded: ${resultString.take(1000)}${if (resultString.length > 1000) "..." else ""}"
-                )
-            } else {
+            if (!result.success) {
                 AppLogger.e(TAG, "[Sync] Tool execution failed: ${result.error}")
             }
 
@@ -523,7 +529,7 @@ internal object JsNativeInterfaceDelegates {
             )
         } catch (e: Exception) {
             AppLogger.e(TAG, "[Sync] Error in tool call: ${e.message}", e)
-            buildToolErrorJson("Error: ${e.message}")
+            buildToolErrorJson(e.message.orEmpty())
         }
     }
 
@@ -543,37 +549,19 @@ internal object JsNativeInterfaceDelegates {
                 parseToolCall(toolType, toolName, paramsJson)
             } catch (e: Exception) {
                 AppLogger.e(TAG, "[Async] Error preparing tool call: ${e.message}", e)
-                val rawMessage = e.message?.trim().orEmpty()
-                val finalMessage =
-                    if (rawMessage.equals("Tool name cannot be empty", ignoreCase = true)) {
-                        "Tool name cannot be empty"
-                    } else {
-                        "Error: ${if (rawMessage.isBlank()) "Unknown error" else rawMessage}"
-                    }
                 sendToolResult(
                     callbackId,
-                    buildToolErrorJson(finalMessage),
+                    buildToolErrorJson(e.message.orEmpty()),
                     true
                 )
                 return
             }
 
-        AppLogger.d(
-            TAG,
-            "[Async] JavaScript tool call: ${parsed.fullToolName} with params: ${parsed.params}, callbackId: $callbackId"
-        )
-
         Thread {
             try {
                 val result = toolHandler.executeTool(parsed.aiTool)
 
-                if (result.success) {
-                    val resultString = result.result.toString()
-                    AppLogger.d(
-                        TAG,
-                        "[Async] Tool execution succeeded: ${resultString.take(1000)}${if (resultString.length > 1000) "..." else ""}"
-                    )
-                } else {
+                if (!result.success) {
                     AppLogger.e(TAG, "[Async] Tool execution failed: ${result.error}")
                 }
 
@@ -589,7 +577,7 @@ internal object JsNativeInterfaceDelegates {
                 AppLogger.e(TAG, "[Async] Error in async tool execution: ${e.message}", e)
                 sendToolResult(
                     callbackId,
-                    buildToolErrorJson("Error: ${e.message}"),
+                    buildToolErrorJson(e.message.orEmpty()),
                     true
                 )
             }
@@ -616,16 +604,11 @@ internal object JsNativeInterfaceDelegates {
                 AppLogger.e(TAG, "[AsyncStream] Error preparing tool call: ${e.message}", e)
                 sendToolResult(
                     callbackId,
-                    buildToolErrorJson("Error: ${e.message ?: "Unknown error"}"),
+                    buildToolErrorJson(e.message.orEmpty()),
                     true
                 )
                 return
             }
-
-        AppLogger.d(
-            TAG,
-            "[AsyncStream] JavaScript tool call: ${parsed.fullToolName} with params: ${parsed.params}, callbackId: $callbackId, intermediateCallbackId: $intermediateCallbackId"
-        )
 
         Thread {
             try {
@@ -668,7 +651,7 @@ internal object JsNativeInterfaceDelegates {
                 AppLogger.e(TAG, "[AsyncStream] Error in async streaming tool execution: ${e.message}", e)
                 sendToolResult(
                     callbackId,
-                    buildToolErrorJson("Error: ${e.message}"),
+                    buildToolErrorJson(e.message.orEmpty()),
                     true
                 )
             }
@@ -704,6 +687,24 @@ internal object JsNativeInterfaceDelegates {
                 }
             """.trimIndent()
         }
+    }
+
+    fun buildStringResultCallbackScript(callbackId: String, result: String, isError: Boolean): String {
+        val safeCallbackId = JSONObject.quote(callbackId.trim())
+        val safeResult = JSONObject.quote(result)
+        return """
+            (function() {
+                var root = typeof globalThis !== 'undefined'
+                    ? globalThis
+                    : (typeof window !== 'undefined' ? window : this);
+                var callback = root ? root[$safeCallbackId] : undefined;
+                if (typeof callback === 'function') {
+                    callback($safeResult, $isError);
+                    return;
+                }
+                console.error("Callback not found: " + $safeCallbackId);
+            })();
+        """.trimIndent()
     }
 
     fun imageProcessing(

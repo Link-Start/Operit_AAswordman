@@ -43,6 +43,7 @@ private fun buildExecutionPreludeSource(): String {
         var done = function() { return __operitInvokeCallRuntime('done', arguments); };
         var complete = function() { return __operitInvokeCallRuntime('complete', arguments); };
         var getEnv = function() { return __operitInvokeCallRuntime('getEnv', arguments); };
+        var getPluginConfigDir = function() { return __operitInvokeCallRuntime('getPluginConfigDir', arguments); };
         var getState = function() { return __operitInvokeCallRuntime('getState', arguments); };
         var getLang = function() { return __operitInvokeCallRuntime('getLang', arguments); };
         var getCallerName = function() { return __operitInvokeCallRuntime('getCallerName', arguments); };
@@ -108,6 +109,24 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                 return !!value;
             }
 
+            function hasUsableJavaInstanceMarker(value) {
+                if (!value || typeof value !== 'object') {
+                    return false;
+                }
+                try {
+                    return (
+                        Object.prototype.hasOwnProperty.call(value, '__javaHandle') &&
+                        Object.prototype.hasOwnProperty.call(value, '__javaClass') &&
+                        typeof value.__javaHandle === 'string' &&
+                        typeof value.__javaClass === 'string' &&
+                        text(value.__javaHandle).trim().length > 0 &&
+                        text(value.__javaClass).trim().length > 0
+                    );
+                } catch (_javaMarkerError) {
+                    return false;
+                }
+            }
+
             function normalizeSerializableValue(value, seen) {
                 if (
                     value == null ||
@@ -146,10 +165,7 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         });
                     }
 
-                    if (
-                        Object.prototype.hasOwnProperty.call(value, '__javaHandle') &&
-                        Object.prototype.hasOwnProperty.call(value, '__javaClass')
-                    ) {
+                    if (hasUsableJavaInstanceMarker(value)) {
                         return {
                             __javaHandle: text(value.__javaHandle),
                             __javaClass: text(value.__javaClass)
@@ -307,9 +323,11 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                 if (!exportsRef || typeof exportsRef !== 'object') {
                     return;
                 }
+                try { exportsRef.__operit_toolpkg_module_path = modulePath; } catch (_e) {}
                 Object.keys(exportsRef).forEach(function(key) {
                     if (typeof exportsRef[key] === 'function') {
                         try { exportsRef[key].__operit_toolpkg_module_path = modulePath; } catch (_e) {}
+                        try { exportsRef[key].__operit_toolpkg_export_name = key; } catch (_e2) {}
                     }
                 });
             }
@@ -392,7 +410,13 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         ? root.__operitRegisterCallSession
                         : null;
                 if (typeof registerCallSession !== 'function') {
-                    NativeInterface.setCallError(callId, 'JS execution runtime bridge is unavailable');
+                    NativeInterface.setCallError(
+                        callId,
+                        JSON.stringify({
+                            success: false,
+                            message: 'JS execution runtime bridge is unavailable'
+                        })
+                    );
                     return;
                 }
 
@@ -489,7 +513,13 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         return;
                     }
                     state.completed = true;
-                    NativeInterface.setCallError(callId, text(message || 'Unknown error'));
+                    NativeInterface.setCallError(
+                        callId,
+                        JSON.stringify({
+                            success: false,
+                            message: text(message)
+                        })
+                    );
                     finalizeCall();
                 }
 
@@ -533,13 +563,14 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         emitSerializedResult(serializeOrThrow(normalizeComposeResult(value)));
                     } catch (error) {
                         var report = callRuntimeReport(error, 'Result Serialization Failure');
-                        emitError(
-                            JSON.stringify({
-                                error: 'Result serialization failed',
-                                details: report.details,
-                                formatted: report.formatted
-                            })
-                        );
+                        var serializationMessage =
+                            report &&
+                            report.details &&
+                            typeof report.details.message === 'string' &&
+                            report.details.message
+                                ? report.details.message
+                                : text(error && error.message ? error.message : error);
+                        emitError('Result serialization failed: ' + serializationMessage);
                     }
                 }
 
@@ -558,15 +589,14 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                                 return;
                             }
                             var report = callRuntimeReport(error, 'Async Promise Rejection');
-                            emitError(
-                                report && report.formatted
-                                    ? JSON.stringify({
-                                        error: 'Promise rejection',
-                                        details: report.details,
-                                        formatted: report.formatted
-                                    })
-                                    : 'Promise rejection: ' + text(error && error.stack ? error.stack : error)
-                            );
+                            var rejectionMessage =
+                                report &&
+                                report.details &&
+                                typeof report.details.message === 'string' &&
+                                report.details.message
+                                    ? report.details.message
+                                    : text(error && error.message ? error.message : error);
+                            emitError(rejectionMessage || 'Promise rejection');
                         });
                     return true;
                 }
@@ -583,6 +613,25 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         getEnv: function(key) {
                             var value = NativeInterface.getEnvForCall(callId, text(key).trim());
                             return value == null || value === '' ? undefined : text(value);
+                        },
+                        getPluginConfigDir: function(pluginId) {
+                            var explicitId = pluginId == null ? '' : text(pluginId).trim();
+                            var resolvedId =
+                                explicitId ||
+                                readCallValue('__operit_ui_package_name', '') ||
+                                readCallValue('toolPkgId', '') ||
+                                readCallValue('containerPackageName', '') ||
+                                readCallValue('__operit_package_name', '');
+                            if (
+                                !resolvedId ||
+                                typeof NativeInterface === 'undefined' ||
+                                !NativeInterface ||
+                                typeof NativeInterface.getPluginConfigDir !== 'function'
+                            ) {
+                                return '';
+                            }
+                            var path = NativeInterface.getPluginConfigDir(resolvedId);
+                            return typeof path === 'string' ? path : '';
                         },
                         getState: function() { return readCallValue('__operit_package_state', undefined); },
                         getLang: function() { return readCallValue('__operit_package_lang', 'en'); },
@@ -636,6 +685,331 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                         }
                     }
                     return null;
+                }
+
+                function getCurrentToolPkgRuntimeKind() {
+                    var explicitRuntime = text(
+                        readCallValue('__operit_toolpkg_runtime_kind', '')
+                    ).trim().toLowerCase();
+                    if (
+                        explicitRuntime === 'main' ||
+                        explicitRuntime === 'ui' ||
+                        explicitRuntime === 'sandbox' ||
+                        explicitRuntime === 'provider'
+                    ) {
+                        return explicitRuntime;
+                    }
+                    var contextKey = text(
+                        readCallValue(
+                            '__operit_execution_context_key',
+                            readCallValue('executionContextKey', '')
+                        )
+                    ).trim();
+                    if (/^toolpkg_provider:/i.test(contextKey)) {
+                        return 'provider';
+                    }
+                    var subpackageId = text(
+                        readCallValue('__operit_toolpkg_subpackage_id', '')
+                    ).trim();
+                    return subpackageId.length > 0 ? 'sandbox' : 'main';
+                }
+
+                function isLocalUiModulePath(modulePath) {
+                    return /\.ui\.js$/i.test(normalizePath(modulePath));
+                }
+
+                function getCurrentToolPkgExecutionContextKey() {
+                    var composeContextKey = text(
+                        readCallValue(
+                            '__operit_compose_execution_context_key',
+                            readCallValue('executionContextKey', '')
+                        )
+                    ).trim();
+                    var scopedContextKey = text(
+                        readCallValue('__operit_execution_context_key', '')
+                    ).trim();
+                    if (composeContextKey.length > 0) {
+                        return composeContextKey;
+                    }
+                    if (scopedContextKey.length > 0) {
+                        return scopedContextKey;
+                    }
+                    return packageTarget ? 'toolpkg_main:' + packageTarget : '';
+                }
+
+                function ensureToolPkgIpcRegistry() {
+                    var registry = root.__operitToolPkgIpcRegistry;
+                    if (!registry || typeof registry !== 'object') {
+                        registry = Object.create(null);
+                        root.__operitToolPkgIpcRegistry = registry;
+                    }
+                    return registry;
+                }
+
+                function normalizeToolPkgIpcChannel(channel) {
+                    return text(channel).trim();
+                }
+
+                function registerToolPkgIpcHandler(channel, handler) {
+                    var normalizedChannel = normalizeToolPkgIpcChannel(channel);
+                    if (normalizedChannel.length === 0) {
+                        throw new Error('ToolPkg.ipc channel is required');
+                    }
+                    if (typeof handler !== 'function') {
+                        throw new Error('ToolPkg.ipc handler must be a function');
+                    }
+                    ensureToolPkgIpcRegistry()[normalizedChannel] = handler;
+                    return function() {
+                        var registry = ensureToolPkgIpcRegistry();
+                        if (registry[normalizedChannel] === handler) {
+                            delete registry[normalizedChannel];
+                        }
+                    };
+                }
+
+                function unregisterToolPkgIpcHandler(channel, handler) {
+                    var normalizedChannel = normalizeToolPkgIpcChannel(channel);
+                    if (normalizedChannel.length === 0) {
+                        return false;
+                    }
+                    var registry = ensureToolPkgIpcRegistry();
+                    if (arguments.length > 1 && registry[normalizedChannel] !== handler) {
+                        return false;
+                    }
+                    if (typeof registry[normalizedChannel] === 'function') {
+                        delete registry[normalizedChannel];
+                        return true;
+                    }
+                    return false;
+                }
+
+                function invokeToolPkgIpcLocal(channel, payload, meta) {
+                    var normalizedChannel = normalizeToolPkgIpcChannel(channel);
+                    if (normalizedChannel.length === 0) {
+                        throw new Error('ToolPkg.ipc channel is required');
+                    }
+                    var registry = ensureToolPkgIpcRegistry();
+                    var handler = registry[normalizedChannel];
+                    if (typeof handler !== 'function') {
+                        throw new Error('ToolPkg.ipc channel is not registered: ' + normalizedChannel);
+                    }
+                    return handler(
+                        payload,
+                        meta && typeof meta === 'object' ? meta : {}
+                    );
+                }
+
+                function ensureToolPkgIpcApi() {
+                    var toolPkgApi = root.ToolPkg && typeof root.ToolPkg === 'object'
+                        ? root.ToolPkg
+                        : {};
+                    if (root.ToolPkg !== toolPkgApi) {
+                        root.ToolPkg = toolPkgApi;
+                    }
+                    var ipcApi = toolPkgApi.ipc && typeof toolPkgApi.ipc === 'object'
+                        ? toolPkgApi.ipc
+                        : {};
+
+                    ipcApi.on = function(channel, handler) {
+                        return registerToolPkgIpcHandler(channel, handler);
+                    };
+                    ipcApi.off = function(channel, handler) {
+                        return unregisterToolPkgIpcHandler(channel, handler);
+                    };
+                    ipcApi.call = function(channel, payload, options) {
+                        var normalizedChannel = normalizeToolPkgIpcChannel(channel);
+                        if (normalizedChannel.length === 0) {
+                            return Promise.reject(new Error('ToolPkg.ipc channel is required'));
+                        }
+                        var callOptions = options && typeof options === 'object' ? options : {};
+                        var targetRuntime = text(callOptions.targetRuntime || '').trim().toLowerCase();
+                        if (
+                            targetRuntime &&
+                            targetRuntime !== 'main' &&
+                            targetRuntime !== 'ui' &&
+                            targetRuntime !== 'sandbox' &&
+                            targetRuntime !== 'provider'
+                        ) {
+                            return Promise.reject(new Error('ToolPkg.ipc targetRuntime is invalid: ' + targetRuntime));
+                        }
+                        var targetContextKey = text(callOptions.targetContextKey || '').trim();
+                        var hasTargetOptions = targetRuntime.length > 0 || targetContextKey.length > 0;
+                        var currentContextKey = getCurrentToolPkgExecutionContextKey();
+                        var currentRuntime = getCurrentToolPkgRuntimeKind();
+                        if (
+                            currentRuntime === 'main' &&
+                            (
+                                !hasTargetOptions ||
+                                (
+                                    (targetRuntime.length === 0 || targetRuntime === 'main') &&
+                                    (targetContextKey.length === 0 || targetContextKey === currentContextKey)
+                                )
+                            )
+                        ) {
+                            try {
+                                return Promise.resolve(
+                                    invokeToolPkgIpcLocal(normalizedChannel, payload, {
+                                        channel: normalizedChannel,
+                                        callerContextKey: currentContextKey,
+                                        currentContextKey: currentContextKey,
+                                        currentRuntime: currentRuntime,
+                                        packageTarget: packageTarget
+                                    })
+                                );
+                            } catch (error) {
+                                return Promise.reject(error);
+                            }
+                        }
+                        if (
+                            targetContextKey.length > 0 &&
+                            targetContextKey === currentContextKey &&
+                            targetRuntime.length > 0 &&
+                            targetRuntime !== currentRuntime
+                        ) {
+                            return Promise.reject(
+                                new Error(
+                                    'ToolPkg.ipc targetRuntime does not match current runtime: ' +
+                                        targetRuntime +
+                                        ' != ' +
+                                        currentRuntime
+                                )
+                            );
+                        }
+                        if (targetContextKey.length > 0 && targetContextKey === currentContextKey) {
+                            try {
+                                return Promise.resolve(
+                                    invokeToolPkgIpcLocal(normalizedChannel, payload, {
+                                        channel: normalizedChannel,
+                                        callerContextKey: currentContextKey,
+                                        currentContextKey: currentContextKey,
+                                        currentRuntime: currentRuntime,
+                                        packageTarget: packageTarget
+                                    })
+                                );
+                            } catch (error) {
+                                return Promise.reject(error);
+                            }
+                        }
+                        if (
+                            !packageTarget ||
+                            typeof NativeInterface === 'undefined' ||
+                            !NativeInterface ||
+                            typeof NativeInterface.invokeToolPkgIpcAsync !== 'function'
+                        ) {
+                            return Promise.reject(new Error('ToolPkg.ipc runtime bridge is unavailable'));
+                        }
+                        var payloadJson;
+                        try {
+                            payloadJson = serializeOrThrow(payload);
+                        } catch (error) {
+                            try {
+                                if (
+                                    typeof NativeInterface !== 'undefined' &&
+                                    NativeInterface &&
+                                    typeof NativeInterface.logErrorForCall === 'function'
+                                ) {
+                                    NativeInterface.logErrorForCall(
+                                        callId,
+                                        'ToolPkg.ipc payload serialization failed: ' +
+                                            text(error && error.message ? error.message : error)
+                                    );
+                                }
+                            } catch (_logIpcPayloadError) {}
+                            return Promise.reject(error);
+                        }
+                        return new Promise(function(resolve, reject) {
+                            var callbackId =
+                                '__operit_toolpkg_ipc_' +
+                                Date.now() +
+                                '_' +
+                                Math.random().toString(36).slice(2, 10);
+                            root[callbackId] = function(resultJson, isError) {
+                                try {
+                                    delete root[callbackId];
+                                } catch (_deleteCallbackError) {
+                                    root[callbackId] = undefined;
+                                }
+                                if (isError) {
+                                    reject(new Error(text(resultJson).trim() || 'ToolPkg.ipc call failed'));
+                                    return;
+                                }
+                                var parsed;
+                                try {
+                                    parsed = JSON.parse(text(resultJson) || 'null');
+                                } catch (error) {
+                                    try {
+                                        if (
+                                            typeof NativeInterface !== 'undefined' &&
+                                            NativeInterface &&
+                                            typeof NativeInterface.logErrorForCall === 'function'
+                                        ) {
+                                            var resultType = resultJson === null ? 'null' : typeof resultJson;
+                                            var preview = text(resultJson).slice(0, 500);
+                                            NativeInterface.logErrorForCall(
+                                                callId,
+                                                'ToolPkg.ipc returned invalid JSON: ' +
+                                                    text(error && error.message ? error.message : error) +
+                                                    ', resultType=' + resultType +
+                                                    ', preview=' + preview
+                                            );
+                                        }
+                                    } catch (_logIpcParseError) {}
+                                    reject(
+                                        new Error(
+                                            'ToolPkg.ipc returned invalid JSON: ' +
+                                                text(error && error.message ? error.message : error)
+                                        )
+                                    );
+                                    return;
+                                }
+                                if (parsed && parsed.success === true) {
+                                    resolve(parsed.value);
+                                    return;
+                                }
+                                reject(
+                                    new Error(
+                                        parsed && typeof parsed.message === 'string' && parsed.message.trim().length > 0
+                                            ? parsed.message.trim()
+                                            : 'ToolPkg.ipc call failed'
+                                    )
+                                );
+                            };
+                            try {
+                                NativeInterface.invokeToolPkgIpcAsync(
+                                    callbackId,
+                                    packageTarget,
+                                    currentContextKey,
+                                    targetContextKey,
+                                    targetRuntime,
+                                    normalizedChannel,
+                                    payloadJson
+                                );
+                            } catch (error) {
+                                try {
+                                    delete root[callbackId];
+                                } catch (_deleteCallbackInvokeError) {
+                                    root[callbackId] = undefined;
+                                }
+                                reject(error);
+                            }
+                        });
+                    };
+
+                    toolPkgApi.ipc = ipcApi;
+                    root.__operitInvokeToolPkgIpcLocal = invokeToolPkgIpcLocal;
+                }
+
+                ensureToolPkgIpcApi();
+
+                function canSerializeAsPlainObject(value) {
+                    if (!value || typeof value !== 'object') {
+                        return false;
+                    }
+                    if (Array.isArray(value)) {
+                        return true;
+                    }
+                    var prototype = Object.getPrototypeOf(value);
+                    return prototype === Object.prototype || prototype === null;
                 }
 
                 function executeModule(modulePath, moduleText, requireInternal) {
@@ -716,7 +1090,7 @@ internal fun buildExecutionRuntimeBridgeScript(): String {
                     markRequire(request, fromPath || screenPath || '<root>', resolvedPath);
                     markModule(resolvedPath);
 
-                    if (registrationMode && /(^|\/)ui\/.+\.ui\.js$/i.test(resolvedPath)) {
+                    if (registrationMode && isLocalUiModulePath(resolvedPath)) {
                         return createRegistrationScreenPlaceholder(resolvedPath);
                     }
 

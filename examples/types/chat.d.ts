@@ -15,6 +15,7 @@ import {
     ChatTitleUpdateResultData,
     ChatDeleteResultData,
     MessageSendResultData,
+    MessageSendStreamEventData,
     ChatMessagesResultData,
     CharacterCardListResultData
 } from './results';
@@ -24,6 +25,8 @@ import {
  * Provides methods for managing chat conversations
  */
 export namespace Chat {
+    type Runtime = 'main' | 'floating';
+
     interface StartServiceOptions {
         initial_mode?: 'WINDOW' | 'BALL' | 'VOICE_BALL' | 'FULLSCREEN' | 'RESULT_DISPLAY' | 'SCREEN_OCR';
         auto_enter_voice_chat?: boolean;
@@ -33,11 +36,17 @@ export namespace Chat {
     }
 
     interface SendMessageOptions {
+        runtime?: Runtime;
         persist_turn?: boolean;
         notify_reply?: boolean;
         hide_user_message?: boolean;
         disable_warning?: boolean;
         timeout_ms?: number;
+    }
+
+    interface SendMessageStreamingOptions extends SendMessageOptions {
+        waifu?: boolean;
+        onIntermediateResult?: (event: MessageSendStreamEventData) => void;
     }
 
     /**
@@ -119,6 +128,23 @@ export namespace Chat {
         roleCardId?: string,
         senderName?: string,
         options?: SendMessageOptions
+    ): Promise<MessageSendResultData>;
+
+    /**
+     * Send a message to the AI and receive incremental reply chunks.
+     * @param message - The message content to send
+     * @param chatId - Optional chat ID to send the message to (defaults to current chat)
+     * @param roleCardId - Optional role card ID to use for this send
+     * @param senderName - Optional display name when AI sends as user
+     * @param options - Optional per-turn controls, plus streaming callback and waifu-style chunk aggregation
+     * @returns Promise resolving to the final message send result
+     */
+    function sendMessageStreaming(
+        message: string,
+        chatId?: string,
+        roleCardId?: string,
+        senderName?: string,
+        options?: SendMessageStreamingOptions
     ): Promise<MessageSendResultData>;
 
     /**

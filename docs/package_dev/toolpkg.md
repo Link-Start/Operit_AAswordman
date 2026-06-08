@@ -11,8 +11,10 @@
 - 消息处理插件。
 - XML 渲染插件。
 - 输入菜单开关插件。
+- AI 聊天输入框监听和提交 Hook。
 - 工具执行生命周期钩子。
 - Prompt 输入、历史、系统提示词、工具提示词、最终发送前的各类钩子。
+- 摘要生成阶段的各类钩子。
 
 ## 类型命名空间与运行时对象
 
@@ -35,6 +37,7 @@ ToolPkg.registerMessageProcessingPlugin(...)
 - `registerToolPkgMessageProcessingPlugin(...)`
 - `registerToolPkgXmlRenderPlugin(...)`
 - `registerToolPkgInputMenuTogglePlugin(...)`
+- `registerToolPkgChatInputHook(...)`
 - `registerToolPkgToolLifecycleHook(...)`
 - `registerToolPkgPromptInputHook(...)`
 - `registerToolPkgPromptHistoryHook(...)`
@@ -43,6 +46,7 @@ ToolPkg.registerMessageProcessingPlugin(...)
 - `registerToolPkgToolPromptComposeHook(...)`
 - `registerToolPkgPromptFinalizeHook(...)`
 - `registerToolPkgPromptEstimateFinalizeHook(...)`
+- `registerToolPkgSummaryGenerateHook(...)`
 
 ## 基础类型
 
@@ -84,8 +88,10 @@ type LocalizedText = string | { [lang: string]: string }
 - `message_processing`
 - `xml_render`
 - `input_menu_toggle`
+- 聊天输入框事件
 - 工具生命周期事件
 - Prompt 输入 / 历史 / 系统提示词 / 工具提示词 / 最终发送事件
+- 摘要生成事件
 
 ### Prompt 轮次类型：`PromptTurnKind` / `PromptTurn`
 
@@ -152,6 +158,12 @@ interface PromptTurn {
 - `before_finalize_prompt`
 - `before_send_to_model`
 
+#### `SummaryGenerateEventName`
+
+- `before_prepare_summary_prompt`
+- `before_send_to_model`
+- `after_generate_summary`
+
 ## 事件对象
 
 所有 hook 事件都继承自：
@@ -198,6 +210,27 @@ interface PromptTurn {
 - `action?: 'create' | 'toggle' | string`
 - `toggleId?`
 
+### `ChatInputEventPayload`
+
+字段包括：
+
+- `chatId?`
+- `text?`
+- `selectionStart?`
+- `selectionEnd?`
+- `hasAttachments?`
+- `attachmentCount?`
+- `isProcessing?`
+- `inputStyle?`
+- `source?`
+- `submitSource?`
+
+聊天输入框事件名包括：
+
+- `input_changed`
+- `submit_requested`
+- `submitted`
+
 ### `ToolLifecycleEventPayload`
 
 字段包括：
@@ -228,6 +261,22 @@ interface PromptTurn {
 - `toolPrompt?`
 - `modelParameters?`
 - `availableTools?`
+- `metadata?`
+
+### `SummaryGenerateEventPayload`
+
+字段包括：
+
+- `stage?`
+- `functionType?`
+- `useEnglish?`
+- `previousSummary?`
+- `chatHistory?: PromptTurn[]`
+- `preparedHistory?: PromptTurn[]`
+- `systemPrompt?`
+- `summaryPrompt?`
+- `summaryResult?`
+- `modelParameters?`
 - `metadata?`
 
 ## 返回值类型
@@ -291,6 +340,21 @@ interface PromptTurn {
 - `description?`
 - `isChecked?`
 
+### 聊天输入框返回：`ChatInputHookReturn`
+
+`input_changed`、`submitted` 的返回值会被忽略。
+
+`submit_requested` 支持返回：
+
+- `null`
+- `void`
+- `string`：表示替换本次提交文本
+- `{ action: 'allow' }`
+- `{ action: 'block', message?: string }`
+- `{ action: 'replace', text: string }`
+- `{ action: 'consume', message?: string, clearInput?: boolean }`
+- 或对应的 `Promise`
+
 ### Prompt 相关返回
 
 - `PromptInputHookReturn`
@@ -298,6 +362,7 @@ interface PromptTurn {
 - `SystemPromptComposeHookReturn`
 - `ToolPromptComposeHookReturn`
 - `PromptFinalizeHookReturn`
+- `SummaryGenerateHookReturn`
 
 这几类返回允许在字符串、消息数组、结构化对象与空返回之间切换，具体以类型定义为准。
 其中：
@@ -305,6 +370,7 @@ interface PromptTurn {
 - `PromptHistoryHookReturn` 里的数组元素类型是 `PromptTurn`
 - `PromptFinalizeHookReturn` 里的数组元素类型也是 `PromptTurn`
 - 估算阶段的 `PromptEstimateHistoryHook` / `PromptEstimateFinalizeHook` 复用相同的 payload 和返回结构
+- `SummaryGenerateHookReturn` 可以返回字符串或结构化对象；字符串在摘要生成前阶段会被当作 `summaryPrompt`，在 `after_generate_summary` 阶段会被当作 `summaryResult`
 
 ## 注册定义对象
 
@@ -348,6 +414,13 @@ interface PromptTurn {
 - `id`
 - `function`
 
+### `ChatInputHookRegistration`
+
+字段：
+
+- `id`
+- `function`
+
 ### 其余注册对象
 
 以下注册对象结构都很简单，字段都是：`id` + `function`：
@@ -360,6 +433,7 @@ interface PromptTurn {
 - `ToolPromptComposeHookRegistration`
 - `PromptFinalizeHookRegistration`
 - `PromptEstimateFinalizeHookRegistration`
+- `SummaryGenerateHookRegistration`
 
 ## `ToolPkg.Registry`
 
@@ -373,6 +447,7 @@ interface PromptTurn {
 - `registerMessageProcessingPlugin(definition)`
 - `registerXmlRenderPlugin(definition)`
 - `registerInputMenuTogglePlugin(definition)`
+- `registerChatInputHook(definition)`
 - `registerToolLifecycleHook(definition)`
 - `registerPromptInputHook(definition)`
 - `registerPromptHistoryHook(definition)`
@@ -381,6 +456,7 @@ interface PromptTurn {
 - `registerToolPromptComposeHook(definition)`
 - `registerPromptFinalizeHook(definition)`
 - `registerPromptEstimateFinalizeHook(definition)`
+- `registerSummaryGenerateHook(definition)`
 - `readResource(key, outputFileName?)`
 
 ### `ToolPkg.readResource(...)`
@@ -513,6 +589,59 @@ ToolPkg.registerInputMenuTogglePlugin({
       ];
     }
     return [];
+  }
+});
+```
+
+### 注册聊天输入框 Hook
+
+```ts
+ToolPkg.registerChatInputHook({
+  id: 'demo_chat_input',
+  function(event) {
+    if (event.eventName === 'input_changed') {
+      console.log('draft:', event.eventPayload.text);
+      return;
+    }
+
+    if (event.eventName === 'submit_requested') {
+      const text = event.eventPayload.text || '';
+      if (text.includes('/blocked')) {
+        return {
+          action: 'block',
+          message: '这条消息被插件阻止发送'
+        };
+      }
+      if (text.startsWith('/upper ')) {
+        return {
+          action: 'replace',
+          text: text.slice('/upper '.length).toUpperCase()
+        };
+      }
+    }
+  }
+});
+```
+
+### 注册摘要生成 Hook
+
+```ts
+ToolPkg.registerSummaryGenerateHook({
+  id: 'demo_summary_hook',
+  function(event) {
+    if (event.eventName === 'before_prepare_summary_prompt') {
+      return {
+        summaryPrompt: '请重点总结最近的工程决策、已完成事项和下一步待办。'
+      };
+    }
+
+    if (event.eventName === 'after_generate_summary') {
+      return {
+        summaryResult: String(event.eventPayload?.summaryResult ?? '').trim()
+      };
+    }
+
+    return null;
   }
 });
 ```

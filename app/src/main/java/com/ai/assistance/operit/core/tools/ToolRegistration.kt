@@ -2,13 +2,19 @@ package com.ai.assistance.operit.core.tools
 
 import android.content.Context
 import com.ai.assistance.operit.R
+import com.ai.assistance.operit.api.chat.enhance.ToolExecutionManager
+import com.ai.assistance.operit.core.tools.climode.CliToolModeSupport
+import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.core.tools.defaultTool.ToolGetter
 import com.ai.assistance.operit.data.model.AITool
 import com.ai.assistance.operit.data.model.ToolParameter
 import com.ai.assistance.operit.data.model.ToolResult
+import com.ai.assistance.operit.data.preferences.CharacterCardToolAccessResolver
+import com.ai.assistance.operit.data.preferences.ResolvedCharacterCardToolAccess
 import com.ai.assistance.operit.integrations.tasker.triggerAIAgentAction
 import com.ai.assistance.operit.services.FloatingChatService
 import com.ai.assistance.operit.ui.common.displays.VirtualDisplayOverlay
+import com.ai.assistance.operit.util.LocaleUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.last
@@ -68,6 +74,195 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
         } else {
             ""
         }
+    }
+
+    val packageContextParamNames = setOf(
+        "__operit_package_caller_name",
+        "__operit_package_chat_id",
+        "__operit_package_caller_card_id"
+    )
+
+    class ParsedProxyInvocation(
+        val targetToolName: String,
+        val forwardedParameters: MutableList<ToolParameter>
+    )
+
+    fun isEnglishLanguage(): Boolean {
+        return LocaleUtils.getCurrentLanguage(context).lowercase().startsWith("en")
+    }
+
+    fun buildToolErrorResult(tool: AITool, error: String): ToolResult {
+        return ToolResult(
+            toolName = tool.name,
+            success = false,
+            result = StringResultData(""),
+            error = error
+        )
+    }
+
+    fun parseProxyInvocation(
+        tool: AITool,
+        requireQualifiedTarget: Boolean
+    ): Pair<ParsedProxyInvocation?, ToolResult?> {
+        val allowedParamNames = setOf("tool_name", "params") + packageContextParamNames
+        val unknownParamNames = tool.parameters.map { it.name }.filter { it !in allowedParamNames }
+        if (unknownParamNames.isNotEmpty()) {
+            return null to buildToolErrorResult(
+                tool,
+                "Unexpected parameters: ${unknownParamNames.joinToString(", ")}. Only tool_name, params, and supported system context parameters are allowed"
+            )
+        }
+
+        val toolNameParams = tool.parameters.filter { it.name == "tool_name" }
+        if (toolNameParams.size != 1) {
+            return null to buildToolErrorResult(
+                tool,
+                "Exactly one tool_name parameter is required"
+            )
+        }
+        val targetToolName = toolNameParams.first().value.trim()
+        if (targetToolName.isBlank()) {
+            return null to buildToolErrorResult(
+                tool,
+                "Missing required parameter: tool_name"
+            )
+        }
+
+        if (requireQualifiedTarget && !targetToolName.contains(':')) {
+            return null to buildToolErrorResult(
+                tool,
+                "tool_name must use packageName:toolName format"
+            )
+        }
+
+        val paramsParams = tool.parameters.filter { it.name == "params" }
+        if (paramsParams.size != 1) {
+            return null to buildToolErrorResult(
+                tool,
+                "Exactly one params parameter is required"
+            )
+        }
+        val paramsRaw = paramsParams.first().value.trim()
+        if (paramsRaw.isBlank()) {
+            return null to buildToolErrorResult(tool, "params must be a JSON object")
+        }
+
+        val paramsObject = try {
+            JSONObject(paramsRaw)
+        } catch (_: Exception) {
+            return null to buildToolErrorResult(tool, "params must be a valid JSON object")
+        }
+
+        val forwardedParameters = mutableListOf<ToolParameter>()
+        val keys = paramsObject.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = paramsObject.opt(key)
+            val valueString = when (value) {
+                null, JSONObject.NULL -> "null"
+                is String -> value
+                else -> value.toString()
+            }
+            forwardedParameters.add(ToolParameter(name = key, value = valueString))
+        }
+
+        packageContextParamNames.forEach { paramName ->
+            val value = tool.parameters
+                .firstOrNull { it.name == paramName }
+                ?.value
+                ?.trim()
+            if (!value.isNullOrBlank() && forwardedParameters.none { it.name == paramName }) {
+                forwardedParameters.add(ToolParameter(name = paramName, value = value))
+            }
+        }
+
+        return ParsedProxyInvocation(
+            targetToolName = targetToolName,
+            forwardedParameters = forwardedParameters
+        ) to null
+    }
+
+    fun resolveCurrentRoleCardToolAccess(): ResolvedCharacterCardToolAccess {
+        val runtimeContext = ToolExecutionManager.currentToolRuntimeContext()
+        return runBlocking {
+            CharacterCardToolAccessResolver
+                .getInstance(context)
+                .resolve(
+                    roleCardId = runtimeContext?.callerCardId,
+                    packageManager = handler.getOrCreatePackageManager()
+                )
+        }
+    }
+
+    fun isProxyTargetAllowedForRoleCard(
+        targetToolName: String,
+        forwardedParameters: List<ToolParameter>,
+        roleCardToolAccess: ResolvedCharacterCardToolAccess
+    ): Boolean {
+        val usePackageSourceName =
+            if (targetToolName == "use_package") {
+                forwardedParameters
+                    .firstOrNull { it.name == "package_name" }
+                    ?.value
+                    ?.trim()
+                    .orEmpty()
+                    .ifBlank { null }
+            } else {
+                null
+            }
+
+        return CliToolModeSupport.isToolNameAllowedForRoleCard(
+            toolName = targetToolName,
+            usePackageSourceName = usePackageSourceName,
+            roleCardToolAccess = roleCardToolAccess
+        )
+    }
+
+    fun executeProxyTargetWithPermissionCheck(
+        targetToolName: String,
+        forwardedParameters: List<ToolParameter>,
+        useEnglish: Boolean
+    ): ToolResult {
+        val proxiedTool = AITool(
+            name = targetToolName,
+            parameters = forwardedParameters
+        )
+        val executor = handler.getToolExecutorOrActivate(targetToolName)
+        if (executor == null) {
+            return ToolResult(
+                toolName = targetToolName,
+                success = false,
+                result = StringResultData(""),
+                error = CliToolModeSupport.buildProxyTargetUnavailableMessage(targetToolName, useEnglish)
+            )
+        }
+
+        val hasPermission = runBlocking {
+            handler.getToolPermissionSystem().checkToolPermission(proxiedTool)
+        }
+        if (!hasPermission) {
+            val errorMessage = "User cancelled the tool execution."
+            handler.notifyToolPermissionChecked(
+                proxiedTool,
+                granted = false,
+                reason = errorMessage
+            )
+            return ToolResult(
+                toolName = targetToolName,
+                success = false,
+                result = StringResultData(""),
+                error = errorMessage
+            )
+        }
+
+        handler.notifyToolPermissionChecked(proxiedTool, granted = true)
+        val proxiedResult = handler.executeTool(proxiedTool)
+        return ToolResult(
+            toolName = targetToolName,
+            success = proxiedResult.success,
+            result = proxiedResult.result,
+            error = proxiedResult.error
+        )
     }
 
     // 不在提示词加入的工具
@@ -203,6 +398,85 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             executor = { tool ->
                 val terminalTool = ToolGetter.getTerminalCommandExecutor(context)
                 terminalTool.getSessionScreen(tool)
+            }
+    )
+
+    // 音乐播放工具
+    val musicPlaybackTools = ToolGetter.getMusicPlaybackTools(context)
+
+    handler.registerTool(
+            name = "music_play",
+            descriptionGenerator = { tool ->
+                val source = tool.parameters.find { it.name == "source" }?.value ?: ""
+                "Play music: $source"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.play(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_play_queue",
+            descriptionGenerator = { tool ->
+                val items = tool.parameters.find { it.name == "items" }?.value ?: ""
+                "Play music queue: $items"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.playQueue(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_pause",
+            descriptionGenerator = { _ -> "Pause music playback" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.pause(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_resume",
+            descriptionGenerator = { _ -> "Resume music playback" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.resume(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_stop",
+            descriptionGenerator = { _ -> "Stop music playback" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.stop(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_seek",
+            descriptionGenerator = { tool ->
+                val positionMs = tool.parameters.find { it.name == "position_ms" }?.value ?: ""
+                "Seek music playback to ${positionMs}ms"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.seek(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_set_volume",
+            descriptionGenerator = { tool ->
+                val volume = tool.parameters.find { it.name == "volume" }?.value ?: ""
+                "Set music playback volume to $volume"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.setVolume(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "music_status",
+            descriptionGenerator = { _ -> "Get music playback status" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { musicPlaybackTools.status(tool) }
             }
     )
 
@@ -637,125 +911,158 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
     )
 
     handler.registerTool(
+            name = CliToolModeSupport.SEARCH_TOOL_NAME,
+            descriptionGenerator = { tool ->
+                val query = tool.parameters.find { it.name == "query" }?.value ?: ""
+                "Search hidden tool catalog: $query"
+            },
+            executor = { tool ->
+                val useEnglish = isEnglishLanguage()
+                val runtimeContext = ToolExecutionManager.currentToolRuntimeContext()
+                if (runtimeContext?.toolExposureMode != ToolExposureMode.CLI) {
+                    return@registerTool ToolResult(
+                        toolName = tool.name,
+                        success = false,
+                        result = StringResultData(""),
+                        error = CliToolModeSupport.buildCliModeUnavailableMessage(useEnglish)
+                    )
+                }
+
+                val query = tool.parameters
+                    .firstOrNull { it.name == "query" }
+                    ?.value
+                    ?.trim()
+                    .orEmpty()
+                if (query.isBlank()) {
+                    return@registerTool buildToolErrorResult(tool, "Missing required parameter: query")
+                }
+
+                val limit = tool.parameters
+                    .firstOrNull { it.name == "limit" }
+                    ?.value
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.toIntOrNull()
+                    ?: CliToolModeSupport.defaultSearchLimit()
+
+                val roleCardToolAccess = resolveCurrentRoleCardToolAccess()
+                val hiddenCatalog = runBlocking {
+                    CliToolModeSupport.buildHiddenToolCatalog(
+                        context = context,
+                        packageManager = handler.getOrCreatePackageManager(),
+                        roleCardToolAccess = roleCardToolAccess,
+                        useEnglish = useEnglish
+                    )
+                }
+                val results = CliToolModeSupport.searchHiddenToolCatalog(
+                    catalog = hiddenCatalog,
+                    query = query,
+                    limit = limit
+                )
+                ToolResult(
+                    toolName = tool.name,
+                    success = true,
+                    result = StringResultData(
+                        CliToolModeSupport.formatSearchResults(query, results, useEnglish)
+                    )
+                )
+            }
+    )
+
+    handler.registerTool(
+            name = CliToolModeSupport.PROXY_TOOL_NAME,
+            descriptionGenerator = { tool ->
+                val targetToolName = tool.parameters.find { it.name == "tool_name" }?.value ?: ""
+                "Proxy call to hidden tool: $targetToolName"
+            },
+            executor = { tool ->
+                val useEnglish = isEnglishLanguage()
+                val runtimeContext = ToolExecutionManager.currentToolRuntimeContext()
+                if (runtimeContext?.toolExposureMode != ToolExposureMode.CLI) {
+                    return@registerTool ToolResult(
+                        toolName = tool.name,
+                        success = false,
+                        result = StringResultData(""),
+                        error = CliToolModeSupport.buildCliModeUnavailableMessage(useEnglish)
+                    )
+                }
+
+                val (parsedInvocation, parseError) = parseProxyInvocation(
+                    tool = tool,
+                    requireQualifiedTarget = false
+                )
+                if (parseError != null) {
+                    return@registerTool parseError
+                }
+                val resolvedInvocation = parsedInvocation ?: return@registerTool buildToolErrorResult(
+                    tool,
+                    "Missing required parameter: tool_name"
+                )
+
+                if (CliToolModeSupport.isReservedProxyTarget(resolvedInvocation.targetToolName)) {
+                    return@registerTool ToolResult(
+                        toolName = tool.name,
+                        success = false,
+                        result = StringResultData(""),
+                        error = CliToolModeSupport.buildReservedProxyTargetMessage(
+                            resolvedInvocation.targetToolName,
+                            useEnglish
+                        )
+                    )
+                }
+
+                val roleCardToolAccess = resolveCurrentRoleCardToolAccess()
+                if (!isProxyTargetAllowedForRoleCard(
+                        targetToolName = resolvedInvocation.targetToolName,
+                        forwardedParameters = resolvedInvocation.forwardedParameters,
+                        roleCardToolAccess = roleCardToolAccess
+                    )
+                ) {
+                    return@registerTool ToolResult(
+                        toolName = resolvedInvocation.targetToolName,
+                        success = false,
+                        result = StringResultData(""),
+                        error = CliToolModeSupport.buildRoleAccessDeniedMessage(useEnglish)
+                    )
+                }
+
+                executeProxyTargetWithPermissionCheck(
+                    targetToolName = resolvedInvocation.targetToolName,
+                    forwardedParameters = resolvedInvocation.forwardedParameters,
+                    useEnglish = useEnglish
+                )
+            }
+    )
+
+    handler.registerTool(
             name = "package_proxy",
             descriptionGenerator = { tool ->
                 val targetToolName = tool.parameters.find { it.name == "tool_name" }?.value ?: ""
                 "Proxy call to package tool: $targetToolName"
             },
             executor = { tool ->
-                val packageContextParamNames = setOf(
-                    "__operit_package_caller_name",
-                    "__operit_package_chat_id",
-                    "__operit_package_caller_card_id"
+                val (parsedInvocation, parseError) = parseProxyInvocation(
+                    tool = tool,
+                    requireQualifiedTarget = true
                 )
-                val allowedParamNames = setOf("tool_name", "params") + packageContextParamNames
-                val unknownParamNames = tool.parameters.map { it.name }.filter { it !in allowedParamNames }
-                if (unknownParamNames.isNotEmpty()) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "Unexpected parameters: ${unknownParamNames.joinToString(", ")}. Only tool_name, params, and supported system context parameters are allowed"
-                    )
+                if (parseError != null) {
+                    return@registerTool parseError
                 }
-
-                val toolNameParams = tool.parameters.filter { it.name == "tool_name" }
-                if (toolNameParams.size != 1) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "Exactly one tool_name parameter is required"
-                    )
-                }
-                val targetToolName = toolNameParams.first().value.trim()
-                if (targetToolName.isBlank()) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "Missing required parameter: tool_name"
-                    )
-                }
-
-                if (targetToolName == "package_proxy") {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "tool_name cannot be package_proxy"
-                    )
-                }
-
-                if (!targetToolName.contains(':')) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "tool_name must use packageName:toolName format"
-                    )
-                }
-
-                val paramsParams = tool.parameters.filter { it.name == "params" }
-                if (paramsParams.size != 1) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "Exactly one params parameter is required"
-                    )
-                }
-                val paramsRaw = paramsParams.first().value.trim()
-                if (paramsRaw.isBlank()) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "params must be a JSON object"
-                    )
-                }
-
-                val paramsObject = try {
-                    JSONObject(paramsRaw)
-                } catch (_: Exception) {
-                    return@registerTool ToolResult(
-                        toolName = tool.name,
-                        success = false,
-                        result = StringResultData(""),
-                        error = "params must be a valid JSON object"
-                    )
-                }
-
-                val forwardedParameters = mutableListOf<ToolParameter>()
-                val keys = paramsObject.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val value = paramsObject.opt(key)
-                    val valueString = when (value) {
-                        null, JSONObject.NULL -> "null"
-                        is String -> value
-                        else -> value.toString()
-                    }
-                    forwardedParameters.add(ToolParameter(name = key, value = valueString))
-                }
-
-                packageContextParamNames.forEach { paramName ->
-                    val value = tool.parameters
-                        .firstOrNull { it.name == paramName }
-                        ?.value
-                        ?.trim()
-                    if (!value.isNullOrBlank() && forwardedParameters.none { it.name == paramName }) {
-                        forwardedParameters.add(ToolParameter(name = paramName, value = value))
-                    }
+                val resolvedInvocation = parsedInvocation ?: return@registerTool buildToolErrorResult(
+                    tool,
+                    "Missing required parameter: tool_name"
+                )
+                if (resolvedInvocation.targetToolName == CliToolModeSupport.PACKAGE_PROXY_TOOL_NAME) {
+                    return@registerTool buildToolErrorResult(tool, "tool_name cannot be package_proxy")
                 }
 
                 val proxiedTool = AITool(
-                    name = targetToolName,
-                    parameters = forwardedParameters
+                    name = resolvedInvocation.targetToolName,
+                    parameters = resolvedInvocation.forwardedParameters
                 )
                 val proxiedResult = handler.executeTool(proxiedTool)
                 ToolResult(
-                    toolName = targetToolName,
+                    toolName = resolvedInvocation.targetToolName,
                     success = proxiedResult.success,
                     result = proxiedResult.result,
                     error = proxiedResult.error
@@ -1294,6 +1601,27 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             executor = { tool -> runBlocking(Dispatchers.IO) { chatManagerTool.sendMessageToAI(tool) } }
     )
 
+    handler.registerTool(
+            name = "send_message_to_ai_streaming",
+            descriptionGenerator = { tool ->
+                val message = tool.parameters.find { it.name == "message" }?.value ?: ""
+                val preview = if (message.length > 30) "${message.take(30)}..." else message
+                s(R.string.toolreg_send_message_to_ai_desc, preview)
+            },
+            executor =
+                    object : ToolExecutor {
+                        override fun invoke(tool: AITool): ToolResult {
+                            return runBlocking(Dispatchers.IO) { chatManagerTool.sendMessageToAI(tool) }
+                        }
+
+                        override fun invokeAndStream(
+                                tool: AITool
+                        ): kotlinx.coroutines.flow.Flow<ToolResult> {
+                            return chatManagerTool.sendMessageToAIStream(tool)
+                        }
+                    }
+    )
+
     // 列出所有角色卡
     handler.registerTool(
             name = "list_character_cards",
@@ -1688,6 +2016,28 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                     }
     )
 
+    handler.registerTool(
+            name = "create_file",
+            descriptionGenerator = { tool ->
+                val path = tool.parameters.find { it.name == "path" }?.value ?: ""
+                val environment = tool.parameters.find { it.name == "environment" }?.value
+                val envInfo = formatEnvInfo(environment)
+                "Create file $path$envInfo"
+            },
+            executor = { tool -> runBlocking(Dispatchers.IO) { fileSystemTools.createFile(tool) } }
+    )
+
+    handler.registerTool(
+            name = "edit_file",
+            descriptionGenerator = { tool ->
+                val path = tool.parameters.find { it.name == "path" }?.value ?: ""
+                val environment = tool.parameters.find { it.name == "environment" }?.value
+                val envInfo = formatEnvInfo(environment)
+                "Edit file $path$envInfo"
+            },
+            executor = { tool -> runBlocking(Dispatchers.IO) { fileSystemTools.editFile(tool) } }
+    )
+
     // 压缩文件/目录
     handler.registerTool(
             name = "zip_files",
@@ -1942,6 +2292,198 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             },
             executor = { tool ->
                 runBlocking(Dispatchers.IO) { systemOperationTools.getDeviceLocation(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "request_bluetooth_permission",
+            descriptionGenerator = { _ -> "Request Bluetooth nearby devices permission" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.requestBluetoothPermission(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "get_bluetooth_state",
+            descriptionGenerator = { _ -> "Get Bluetooth adapter state" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.getBluetoothState(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "request_enable_bluetooth",
+            descriptionGenerator = { _ -> "Open the system dialog to enable Bluetooth" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.requestEnableBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "list_bluetooth_bonded_devices",
+            descriptionGenerator = { _ -> "List bonded Bluetooth devices" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.listBluetoothBondedDevices(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "scan_bluetooth_devices",
+            descriptionGenerator = { _ -> "Scan nearby Bluetooth classic and BLE devices" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.scanBluetoothDevices(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_connect",
+            descriptionGenerator = { tool ->
+                val address = tool.parameters.find { it.name == "address" }?.value ?: ""
+                "Connect to Bluetooth classic device $address"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.connectBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_listen",
+            descriptionGenerator = { _ -> "Listen for an incoming Bluetooth classic connection" },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.listenBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_accept",
+            descriptionGenerator = { tool ->
+                val listenerId = tool.parameters.find { it.name == "listener_session_id" }?.value ?: ""
+                "Accept an incoming Bluetooth classic connection from listener $listenerId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.acceptBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_send",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Send data to Bluetooth session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.sendBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_read",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Read data from Bluetooth session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.readBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_send_and_read",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Send data and read response from Bluetooth session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.sendAndReadBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_close",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Close Bluetooth session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.closeBluetooth(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_connect",
+            descriptionGenerator = { tool ->
+                val address = tool.parameters.find { it.name == "address" }?.value ?: ""
+                "Connect to BLE device $address"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.connectBle(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_discover_services",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Discover BLE services for session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.discoverBleServices(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_read_characteristic",
+            descriptionGenerator = { tool ->
+                val characteristicUuid = tool.parameters.find { it.name == "characteristic_uuid" }?.value ?: ""
+                "Read BLE characteristic $characteristicUuid"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.readBleCharacteristic(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_write_characteristic",
+            descriptionGenerator = { tool ->
+                val characteristicUuid = tool.parameters.find { it.name == "characteristic_uuid" }?.value ?: ""
+                "Write BLE characteristic $characteristicUuid"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.writeBleCharacteristic(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_write_and_read_characteristic",
+            descriptionGenerator = { tool ->
+                val writeCharacteristicUuid = tool.parameters.find { it.name == "write_characteristic_uuid" }?.value ?: ""
+                val readCharacteristicUuid = tool.parameters.find { it.name == "read_characteristic_uuid" }?.value ?: ""
+                "Write BLE characteristic $writeCharacteristicUuid and read $readCharacteristicUuid"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.writeAndReadBleCharacteristic(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_subscribe_characteristic",
+            descriptionGenerator = { tool ->
+                val characteristicUuid = tool.parameters.find { it.name == "characteristic_uuid" }?.value ?: ""
+                "Subscribe BLE characteristic $characteristicUuid"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.subscribeBleCharacteristic(tool) }
+            }
+    )
+
+    handler.registerTool(
+            name = "bluetooth_ble_read_notifications",
+            descriptionGenerator = { tool ->
+                val sessionId = tool.parameters.find { it.name == "session_id" }?.value ?: ""
+                "Read BLE notifications from session $sessionId"
+            },
+            executor = { tool ->
+                runBlocking(Dispatchers.IO) { systemOperationTools.readBleNotifications(tool) }
             }
     )
 

@@ -33,7 +33,9 @@ object DefaultModelPricingCollect {
         "INFINIAI",
         "ALIPAY_BAILING",
         "DOUBAO",
-        "PPINFRA"
+        "PPINFRA",
+        "OPENAI_LOCAL",
+        "MIMO"
     )
 
     private fun defaultPricePerRequest(currency: PricingCurrency): Double {
@@ -163,6 +165,7 @@ object DefaultModelPricingCollect {
         "OPENROUTER" to zeroPricing(PricingCurrency.USD),
         "NOUS_PORTAL" to zeroPricing(PricingCurrency.USD),
         "OTHER" to zeroPricing(PricingCurrency.USD),
+        "OPENAI_LOCAL" to zeroPricing(PricingCurrency.CNY),
         "DEEPSEEK" to zeroPricing(PricingCurrency.CNY),
         "BAIDU" to zeroPricing(PricingCurrency.CNY),
         "ALIYUN" to zeroPricing(PricingCurrency.CNY),
@@ -180,6 +183,7 @@ object DefaultModelPricingCollect {
         "OLLAMA" to zeroPricing(PricingCurrency.CNY),
         "MNN" to zeroPricing(PricingCurrency.CNY),
         "LLAMA_CPP" to zeroPricing(PricingCurrency.CNY),
+        "MIMO" to zeroPricing(PricingCurrency.CNY),
         "NOVITA" to zeroPricing(PricingCurrency.USD)
     )
 

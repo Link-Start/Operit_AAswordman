@@ -7,8 +7,11 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
 import com.ai.assistance.operit.R
+import com.ai.assistance.operit.api.chat.ChatRuntimeHolder
+import com.ai.assistance.operit.api.chat.ChatRuntimeSlot
 import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.util.ChatMarkupRegex
+import com.ai.assistance.operit.util.WaifuMessageProcessor
 import com.ai.assistance.operit.util.stream.SharedStream
 import com.ai.assistance.operit.core.tools.AgentStatusResultData
 import com.ai.assistance.operit.core.tools.ChatCreationResultData
@@ -21,6 +24,7 @@ import com.ai.assistance.operit.core.tools.ChatSwitchResultData
 import com.ai.assistance.operit.core.tools.ChatTitleUpdateResultData
 import com.ai.assistance.operit.core.tools.ChatDeleteResultData
 import com.ai.assistance.operit.core.tools.MessageSendResultData
+import com.ai.assistance.operit.core.tools.MessageSendStreamEventData
 import com.ai.assistance.operit.core.tools.StringResultData
 import com.ai.assistance.operit.data.model.ChatHistory
 import com.ai.assistance.operit.data.model.AITool
@@ -29,16 +33,22 @@ import com.ai.assistance.operit.data.model.InputProcessingState
 import com.ai.assistance.operit.data.model.PromptFunctionType
 import com.ai.assistance.operit.data.model.ToolResult
 import com.ai.assistance.operit.data.preferences.CharacterCardManager
+import com.ai.assistance.operit.data.preferences.WaifuPreferences
 import com.ai.assistance.operit.data.repository.ChatHistoryManager
 import com.ai.assistance.operit.services.ChatServiceCore
 import com.ai.assistance.operit.services.FloatingChatService
 import com.ai.assistance.operit.ui.floating.FloatingMode
 import java.time.ZoneId
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
@@ -65,7 +75,7 @@ sealed class MessageSendStreamStartResult {
 
 /**
  * 对话管理工具
- * 通过绑定 FloatingChatService 来管理对话，实现创建、切换、列出对话和发送消息等功能
+ * 负责管理对话、浮窗服务，以及按指定 runtime 发送消息
  */
 class StandardChatManagerTool(private val context: Context) {
 
@@ -116,6 +126,15 @@ class StandardChatManagerTool(private val context: Context) {
         return when (value?.lowercase()) {
             "true" -> true
             "false" -> false
+            else -> null
+        }
+    }
+
+    private fun parseMessageRuntimeSlot(value: String?): ChatRuntimeSlot? {
+        return when (value?.trim()?.lowercase()) {
+            null, "" -> ChatRuntimeSlot.FLOATING
+            "main" -> ChatRuntimeSlot.MAIN
+            "floating" -> ChatRuntimeSlot.FLOATING
             else -> null
         }
     }
@@ -549,6 +568,7 @@ class StandardChatManagerTool(private val context: Context) {
     }
 
     private val appContext = context.applicationContext
+    private val chatRuntimeHolder by lazy { ChatRuntimeHolder.getInstance(appContext) }
 
     // Service 连接状态
     private var chatCore: ChatServiceCore? = null
@@ -1176,27 +1196,20 @@ class StandardChatManagerTool(private val context: Context) {
      */
     suspend fun startMessageToAIStream(tool: AITool): MessageSendStreamStartResult {
         return try {
-            if (!ensureServiceConnected()) {
+            val runtimeParam = tool.parameters.find { it.name == "runtime" }?.value?.trim()
+            val runtimeSlot = parseMessageRuntimeSlot(runtimeParam)
+            if (runtimeParam != null && runtimeSlot == null) {
                 return MessageSendStreamStartResult.Failed(
                     ToolResult(
                         toolName = tool.name,
                         success = false,
                         result = MessageSendResultData(chatId = "", message = ""),
-                        error = "Service not connected"
+                        error = "Invalid parameter: runtime must be main/floating"
                     )
                 )
             }
 
-            val core =
-                chatCore
-                    ?: return MessageSendStreamStartResult.Failed(
-                        ToolResult(
-                            toolName = tool.name,
-                            success = false,
-                            result = MessageSendResultData(chatId = "", message = ""),
-                            error = "ChatServiceCore not initialized"
-                        )
-                    )
+            val core = chatRuntimeHolder.getCore(runtimeSlot ?: ChatRuntimeSlot.FLOATING)
 
             val message = tool.parameters.find { it.name == "message" }?.value
             if (message.isNullOrBlank()) {
@@ -1331,6 +1344,9 @@ class StandardChatManagerTool(private val context: Context) {
                 }
 
                 val preflightChatId = targetChatId ?: core.currentChatId.value
+                val preflightResponseStream = preflightChatId?.let { chatId ->
+                    core.getResponseStream(chatId)
+                }
 
                 try {
                     preflightChatId?.let { chatId ->
@@ -1399,7 +1415,7 @@ class StandardChatManagerTool(private val context: Context) {
                 val responseStream: SharedStream<String> = try {
                     var stream: SharedStream<String>? = core.getResponseStream(resolvedChatId)
                     withTimeout(remainingTimeoutMs(RESPONSE_STREAM_ACQUIRE_TIMEOUT)) {
-                        while (stream == null) {
+                        while (stream == null || stream === preflightResponseStream) {
                             val state = core.inputProcessingStateByChatId.value[resolvedChatId]
                                 ?: InputProcessingState.Idle
                             if (state is InputProcessingState.Error) {
@@ -1510,6 +1526,168 @@ class StandardChatManagerTool(private val context: Context) {
                 success = false,
                 result = MessageSendResultData(chatId = "", message = ""),
                 error = "Error sending message: ${e.message}"
+            )
+        }
+    }
+
+    fun sendMessageToAIStream(tool: AITool): Flow<ToolResult> = channelFlow {
+        val message = tool.parameters.find { it.name == "message" }?.value ?: ""
+        val waifuParam = tool.parameters.find { it.name == "waifu" }?.value?.trim()
+        val waifuMode = parseBooleanOrNull(waifuParam)
+        if (waifuParam != null && waifuMode == null) {
+            send(
+                ToolResult(
+                    toolName = tool.name,
+                    success = false,
+                    result = MessageSendResultData(chatId = "", message = message),
+                    error = "Invalid parameter: waifu must be true/false"
+                )
+            )
+            return@channelFlow
+        }
+
+        try {
+            when (val startResult = startMessageToAIStream(tool)) {
+                is MessageSendStreamStartResult.Failed -> send(startResult.result)
+                is MessageSendStreamStartResult.Started -> {
+                    val session = startResult.session
+                    val effectiveWaifuMode = waifuMode == true
+                    val waifuPreferences = WaifuPreferences.getInstance(context)
+                    val waifuCharDelay = waifuPreferences.waifuCharDelayFlow.first()
+                    val waifuRemovePunctuation =
+                        if (effectiveWaifuMode) {
+                            waifuPreferences.waifuRemovePunctuationFlow.first()
+                        } else {
+                            false
+                        }
+
+                    send(
+                        ToolResult(
+                            toolName = tool.name,
+                            success = true,
+                            result = MessageSendStreamEventData(
+                                type = "start",
+                                chatId = session.chatId,
+                                message = session.message,
+                                waifu = effectiveWaifuMode,
+                                chunkIndex = 0,
+                                receivedChars = 0
+                            ),
+                            error = ""
+                        )
+                    )
+
+                    val fullResponse = StringBuilder()
+                    var chunkIndex = 0
+                    var receivedChars = 0
+
+                    suspend fun sendChunk(chunk: String) {
+                        if (chunk.isEmpty()) return
+                        send(
+                            ToolResult(
+                                toolName = tool.name,
+                                success = true,
+                                result = MessageSendStreamEventData(
+                                    type = "chunk",
+                                    chatId = session.chatId,
+                                    message = session.message,
+                                    waifu = effectiveWaifuMode,
+                                    chunk = chunk,
+                                    chunkIndex = chunkIndex,
+                                    receivedChars = receivedChars
+                                ),
+                                error = ""
+                            )
+                        )
+                        chunkIndex += 1
+                    }
+
+                    val aiResponse =
+                        try {
+                            coroutineScope {
+                                val rawStreamJob = async {
+                                    session.responseStream.collect { chunk: String ->
+                                        if (chunk.isEmpty()) {
+                                            return@collect
+                                        }
+                                        fullResponse.append(chunk)
+                                        receivedChars += chunk.length
+                                        if (!effectiveWaifuMode) {
+                                            sendChunk(chunk)
+                                        }
+                                    }
+                                    fullResponse.toString()
+                                }
+
+                                val waifuStreamJob =
+                                    if (effectiveWaifuMode) {
+                                        launch {
+                                            WaifuMessageProcessor.streamSegmentsWithTypingQueue(
+                                                sourceStream = session.responseStream,
+                                                removePunctuation = waifuRemovePunctuation,
+                                                charDelayMs = waifuCharDelay
+                                            ).collect { segment ->
+                                                sendChunk(segment)
+                                            }
+                                        }
+                                    } else {
+                                        null
+                                    }
+
+                                val result = withTimeout(session.responseTimeoutMs) {
+                                    rawStreamJob.await()
+                                }
+                                waifuStreamJob?.join()
+                                result
+                            }
+                        } catch (e: TimeoutCancellationException) {
+                            runCatching { session.cancel() }
+                            send(
+                                ToolResult(
+                                    toolName = tool.name,
+                                    success = false,
+                                    result = MessageSendResultData(
+                                        chatId = session.chatId,
+                                        message = session.message
+                                    ),
+                                    error = "Timeout waiting for AI reply"
+                                )
+                            )
+                            return@channelFlow
+                        }
+
+                    val finalState = session.currentState()
+                    val finalError =
+                        if (finalState is InputProcessingState.Error) {
+                            finalState.message
+                        } else {
+                            null
+                        }
+
+                    send(
+                        ToolResult(
+                            toolName = tool.name,
+                            success = finalError == null,
+                            result = MessageSendResultData(
+                                chatId = session.chatId,
+                                message = session.message,
+                                aiResponse = aiResponse,
+                                receivedAt = System.currentTimeMillis()
+                            ),
+                            error = finalError
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Failed to stream message", e)
+            send(
+                ToolResult(
+                    toolName = tool.name,
+                    success = false,
+                    result = MessageSendResultData(chatId = "", message = message),
+                    error = "Error sending message: ${e.message}"
+                )
             )
         }
     }

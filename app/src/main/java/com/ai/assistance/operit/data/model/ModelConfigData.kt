@@ -19,6 +19,7 @@ enum class ApiProviderType {
         ZHIPU, // 智谱AI (ChatGLM系列)
         BAICHUAN, // 百川大模型
         MOONSHOT, // 月之暗面大模型
+        MIMO, // Xiaomi MiMo
         DEEPSEEK, // Deepseek大模型
         MISTRAL, // Mistral AI (Codestral等)
         SILICONFLOW, // 硅基流动
@@ -32,6 +33,7 @@ enum class ApiProviderType {
         NVIDIA, // NVIDIA API Catalog / NIM
         LMSTUDIO, // LM Studio本地模型服务
         OLLAMA, // Ollama 本地/私有部署服务（OpenAI兼容）
+        OPENAI_LOCAL, // OpenAI兼容本地模型服务
         MNN, // MNN本地推理引擎
         LLAMA_CPP, // llama.cpp 本地推理引擎
         PPINFRA, // 派欧云
@@ -143,6 +145,9 @@ data class ModelConfigData(
 
         // Gemini特定配置
         val enableGoogleSearch: Boolean = false, // 是否启用Google Search Grounding (仅Gemini支持)
+
+        // Claude特定配置
+        val enableClaude1hPromptCache: Boolean = false, // 是否启用1小时提示缓存TTL (仅Claude支持)
 
         // Tool Call配置
         val enableToolCall: Boolean = false, // 是否启用Tool Call接口调用工具（使用模型原生工具调用而非XML格式）

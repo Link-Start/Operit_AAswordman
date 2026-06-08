@@ -19,7 +19,13 @@ object VoiceServiceFactory {
         SILICONFLOW_TTS,
         /** MiniMax TTS 服务 */
         MINIMAX_TTS,
+        /** MiMo TTS 服务 */
+        MIMO_TTS,
+        /** 豆包 TTS 服务 */
+        DOUBAO_TTS,
         OPENAI_TTS,
+        /** 基于 VITS/Piper ONNX Runtime 推理形态的本地 TTS 服务 */
+        VITS_TTS,
     }
 
     /**
@@ -77,6 +83,20 @@ object VoiceServiceFactory {
                         config = httpConfig
                     )
                 }
+                VoiceServiceType.MIMO_TTS -> {
+                    val httpConfig = prefs.ttsHttpConfigFlow.first()
+                    MimoVoiceProvider(
+                        context = context,
+                        config = httpConfig
+                    )
+                }
+                VoiceServiceType.DOUBAO_TTS -> {
+                    val httpConfig = prefs.ttsHttpConfigFlow.first()
+                    DoubaoVoiceProvider(
+                        context = context,
+                        config = httpConfig
+                    )
+                }
                 VoiceServiceType.OPENAI_TTS -> {
                     val httpConfig = prefs.ttsHttpConfigFlow.first()
                     OpenAIVoiceProvider(
@@ -85,6 +105,13 @@ object VoiceServiceFactory {
                         apiKey = httpConfig.apiKey,
                         model = httpConfig.modelName,
                         initialVoiceId = httpConfig.voiceId
+                    )
+                }
+                VoiceServiceType.VITS_TTS -> {
+                    val vitsConfig = prefs.ttsVitsPackageConfigFlow.first()
+                    VitsVoiceProvider(
+                        context = context,
+                        config = vitsConfig
                     )
                 }
             }

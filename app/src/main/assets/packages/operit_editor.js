@@ -28,9 +28,6 @@
 - 问题核心是“配置和部署链路”，而不是普通问答
 
 【MCP：安装与排查】
-0) 市场来源：
-- OPR MCP 市场（issues）：https://github.com/AAswordman/OperitMCPMarket/issues
-- 该市场内容较少，可在其他可信来源继续搜集 MCP，再按本手册部署。
 1) 配置目录：/sdcard/Download/Operit/mcp_plugins/
 - 主配置：mcp_config.json
 - 运行状态缓存：server_status.json（非实时快照，仅用于状态记录与工具缓存，不作为排查判定依据）
@@ -42,6 +39,8 @@
 - 创建目标目录
 - 将 Android 侧插件目录复制到 Linux 侧目录
 - 执行自动分析出的安装/构建命令（会跳过启动命令）
+3.1) 本地插件识别规则：
+- 这样识别是为兼容存储位置外层套目录的情况（如 `<pluginId>/<repo>-main/...`）；Android 侧目录内至少要命中一个标志文件：`README.md`、`package.json`、`mcp.config.json`、`main.js`、`main.py`、`index.js`、`index.py`，否则可能被判定为未安装，进不了启动列表。
 4) 命令型插件判定：
 - 对于 command 为 npx/uvx/uv 的命令型插件，系统按“已部署”处理，仅做最小目录准备。
 - 配置 Node 类命令型 MCP 时，mcp_config.json 里仍应按上游常见写法填写 `command: "npx"`；不要自行改写成 `pnpm` 或 `npm`。
@@ -89,9 +88,6 @@
 - 检查终端依赖（node/pnpm/python/uv）与 MCP 服务状态；其中 Node 类 `npx` MCP 实际依赖 `pnpm`，若缺少 `pnpm` 将无法启动
 
 【Skill：安装与排查】
-0) 市场来源：
-- OPR Skill 市场（issues）：https://github.com/AAswordman/OperitSkillMarket/issues
-- 也可从其他可信来源获取 skill，下载后解压到 skills 目录。
 1) 目录：/sdcard/Download/Operit/skills/
 2) 识别规则：每个 Skill 必须是一个文件夹，且包含 SKILL.md（skill.md 也可）。
 3) 添加方式（按这个做）：
@@ -132,6 +128,16 @@
 - 可用包列表中的条目，不保证同类型；可能是三种类型混合出现。
 - `use_package` 是三兼容入口：对 MCP/Skill/Sandbox Package 都可统一调用。
 - `ping_mcp` 工具是 `use_package` 的直通封装，用于快速探测指定包是否可被加载。
+
+【市场 Agent API（HTTP，只读）】
+- 基础前缀：`https://api.operit.app/market-stats`
+- 搜索：`/agent/search?q=<关键词>&type=mcp|skill|package|script&limit=10`
+- 详情：`/agent/items/<type>/<id>`
+- 安装计划：`/agent/items/<type>/<id>/install-plan`
+- `package` / `script` 的 install_plan 通常会返回 `download_url`、`tracked_download_url`、`sha256`、`runtime_package_id`。
+- `skill` 的 install_plan 通常会返回 `repository_url`。
+- `mcp` 的 install_plan 可能返回 `config`（可直接作为 installConfig 参考）或 `repository_url`。
+- 当前软件未对 JS 暴露统一的一键安装市场接口；需要安装时，按条目类型自行下载、解压、导入，必要时配合 `debug_install_js_package` / `debug_install_toolpkg` / `use_package`。
 
 【功能模型与模型配置】
 1) 模型配置（Model Config）：
@@ -179,7 +185,10 @@
 - `OPENAI_WS_TTS`：需填写 `url_template`、`api_key`、`model_name`、`voice_id`。其中 `url_template` 应为 Realtime WebSocket 地址（例如 `wss://api.openai.com/v1/realtime`）。
 - `SILICONFLOW_TTS`：需填写 `api_key`、`model_name`、`voice_id`。
 - `MINIMAX_TTS`：需填写 `api_key`，可选填写 `url_template`、`model_name`、`voice_id`。默认接口为 `https://api.minimaxi.com/v1/t2a_v2`，内部固定按 `data.audio -> http_get` 解析音频。
+- `MIMO_TTS`：需填写 `api_key`，可选填写 `url_template`、`model_name`、`voice_id`。预置音色使用 `mimo-v2.5-tts` 和短 `voice_id`；声音克隆使用 `mimo-v2.5-tts-voiceclone`，`voice_id` 填完整 `data:audio/...;base64,...` 音频样本。默认接口为 `https://api.xiaomimimo.com/v1/chat/completions`，内部固定按 `choices[0].message.audio.data -> base64_decode` 解析音频。
+- `DOUBAO_TTS`：豆包 TTS，需填写 `url_template`、`api_key`（Token）、`model_name`（App ID）、`voice_id`（voice_type）。默认接口为 `https://openspeech.bytedance.com/api/v1/tts`，继承 HTTP TTS 队列和响应管线，内部固定按 `data -> base64_decode` 解析音频。
 - `OPENAI_TTS`：需填写 `url_template`、`api_key`、`model_name`、`voice_id`。
+- `VITS_TTS`：本地 VITS/Piper TTS。`tts_vits_package_path` 填本地模型包 `.zip` 或已解压目录，`tts_vits_speaker_id` 可选填数字 speaker id，`tts_vits_options` 可选填写 `sample_rate`、`threads`、`noise_scale`、`length_scale`、`noise_w`、`frontend`、`text_mode`、`speaker_count`、输入名和 blank/bos/eos token 等本地参数。
 3) STT（语音转文本）可选引擎：
 - `SHERPA_NCNN`：本地识别，通常无需 API Key。
 - `OPENAI_STT`：需填写 `endpoint_url`、`api_key`、`model_name`。
@@ -189,6 +198,9 @@
 - `HTTP_TTS` 的模板没放 `{text}` 占位符（GET 通常在 URL，POST 通常在 body）。
 - `HTTP_TTS` 的 `response_pipeline` 不是合法 JSON 数组，或步骤名 / `path` 填错。
 - `OPENAI_WS_TTS` 把 HTTP 地址填成了 WebSocket 地址，或把 WebSocket 地址误填成 HTTP 地址。
+- `VITS_TTS` 的 `tts_vits_package_path` 不是本地 `.zip` 模型包或已解压目录，或文件不存在。
+- `VITS_TTS` 模型包里没有可识别的 `.onnx` / config JSON / lexicon，或配置里缺少 `sample_rate` / token 映射。
+- `VITS_TTS` 的 `tts_vits_options` 不是合法 JSON（必须是对象），或把本地参数名 / 数值类型写错。
 - TTS/STT 的 endpoint 路径写错（比如把 chat/completions 写成 audio 接口）。
 - `model_name` 填了不存在的模型或与接口不匹配。
 - 改完配置后没有重新测试语音播报或语音识别。
@@ -197,7 +209,7 @@
   - 当 `http_method=GET` 时，`{text}` 必须在 `url_template` 里。
   - 当 `http_method=POST` 时，`{text}` 必须在 `request_body` 里。
 - 可选占位符：`{rate}`、`{pitch}`、`{voice}`。
-- 当前对外可稳定使用的占位符只有：`{text}`、`{rate}`、`{pitch}`、`{voice}`。
+- 当前对外可稳定使用的占位符：`{text}`、`{rate}`、`{pitch}`、`{voice}`、`{apiKey}`、`{model}`、`{locale}`、`{uuid}`。
 6) HTTP_TTS 响应处理说明（已发布版本兼容）：
 - `response_pipeline` 留空或传 `[]`：保持旧行为，直接把首个响应体当音频。
 - 当服务端先返回 JSON、字段或下载链接时，再填写 `response_pipeline`，按步骤解析。
@@ -264,9 +276,6 @@
 - The core issue is configuration/deployment flow rather than normal Q&A
 
 [MCP: install and troubleshooting]
-0) Market source:
-- OPR MCP market (issues): https://github.com/AAswordman/OperitMCPMarket/issues
-- This market is still small; you can continue collecting MCPs from other trusted sources, then deploy with this guide.
 1) Config directory: /sdcard/Download/Operit/mcp_plugins/
 - Main config: mcp_config.json
 - Runtime status cache: server_status.json (non-realtime snapshot for status/tool cache only; not a troubleshooting source of truth)
@@ -278,6 +287,8 @@
 - Create target directory
 - Copy plugin files from Android side to Linux side
 - Execute auto-generated install/build commands (startup commands are skipped)
+3.1) Local plugin recognition rule:
+- This exists to handle nested storage layouts (for example `<pluginId>/<repo>-main/...`): the Android-side plugin directory must contain at least one marker file such as `README.md`, `package.json`, `mcp.config.json`, `main.js`, `main.py`, `index.js`, or `index.py`; otherwise it may be treated as not installed and never enter the startup list.
 4) Command-based plugin handling:
 - For command-based plugins using npx/uvx/uv, the system treats them as deployed and only performs minimal directory preparation.
 - For Node-style command MCPs, keep the config in mcp_config.json aligned with upstream examples and still write `command: "npx"`; do not rewrite it to `pnpm` or `npm` yourself.
@@ -325,9 +336,6 @@
 - Check terminal dependencies (node/pnpm/python/uv) and MCP service status; Node-style `npx` MCPs actually depend on `pnpm`, so missing `pnpm` will prevent startup
 
 [Skill: install and troubleshooting]
-0) Market source:
-- OPR Skill market (issues): https://github.com/AAswordman/OperitSkillMarket/issues
-- You can also get skills from other trusted sources, then download and extract them into the skills directory.
 1) Directory: /sdcard/Download/Operit/skills/
 2) Recognition rule: each Skill must be a folder containing SKILL.md (skill.md is also accepted).
 3) How to add a skill (use this workflow):
@@ -368,6 +376,16 @@
 - Available package entries are not guaranteed to be a single type; mixed types are expected.
 - `use_package` is tri-compatible and can be called uniformly for MCP/Skill/Sandbox Package.
 - `ping_mcp` is a thin wrapper over `use_package` for quick package availability probing.
+
+[Market agent API (HTTP, read-only)]
+- Base prefix: `https://api.operit.app/market-stats`
+- Search: `/agent/search?q=<query>&type=mcp|skill|package|script&limit=10`
+- Detail: `/agent/items/<type>/<id>`
+- Install plan: `/agent/items/<type>/<id>/install-plan`
+- `package` / `script` install_plan usually returns `download_url`, `tracked_download_url`, `sha256`, and `runtime_package_id`.
+- `skill` install_plan usually returns `repository_url`.
+- `mcp` install_plan may return `config` (usable as installConfig reference) or `repository_url`.
+- The app does not currently expose a unified one-click market install API to JS; when installation is needed, download/extract/import by item type and use `debug_install_js_package`, `debug_install_toolpkg`, or `use_package` when appropriate.
 
 [Function model and model config]
 1) Model config:
@@ -415,7 +433,10 @@
 - `OPENAI_WS_TTS`: fill `url_template`, `api_key`, `model_name`, `voice_id`. `url_template` should be a Realtime WebSocket endpoint such as `wss://api.openai.com/v1/realtime`.
 - `SILICONFLOW_TTS`: fill `api_key`, `model_name`, `voice_id`.
 - `MINIMAX_TTS`: fill `api_key`; optionally set `url_template`, `model_name`, and `voice_id`. Default endpoint is `https://api.minimaxi.com/v1/t2a_v2`, and audio is resolved from `data.audio` automatically.
+- `MIMO_TTS`: fill `api_key`; optionally set `url_template`, `model_name`, and `voice_id`. Use `mimo-v2.5-tts` with a short `voice_id` for preset voices. Use `mimo-v2.5-tts-voiceclone` with a full `data:audio/...;base64,...` audio sample in `voice_id` for voice cloning. Default endpoint is `https://api.xiaomimimo.com/v1/chat/completions`, and audio is resolved from `choices[0].message.audio.data` with Base64 decoding.
+- `DOUBAO_TTS`: Doubao TTS. Fill `url_template`, `api_key` (token), `model_name` (App ID), and `voice_id` (voice_type). Default endpoint is `https://openspeech.bytedance.com/api/v1/tts`; it inherits the HTTP TTS queue and response pipeline and resolves audio from `data` with Base64 decoding.
 - `OPENAI_TTS`: fill `url_template`, `api_key`, `model_name`, `voice_id`.
+- `VITS_TTS`: local VITS/Piper TTS. Set `tts_vits_package_path` to the local model package `.zip` or extracted package directory, optionally set `tts_vits_speaker_id` to a numeric speaker id, and use `tts_vits_options` for local options such as `sample_rate`, `threads`, `noise_scale`, `length_scale`, `noise_w`, `frontend`, `text_mode`, `speaker_count`, input names, and blank/bos/eos token settings.
 3) STT (speech-to-text) engines:
 - `SHERPA_NCNN`: local recognition, usually no API key required.
 - `OPENAI_STT`: fill `endpoint_url`, `api_key`, `model_name`.
@@ -425,6 +446,9 @@
 - Missing `{text}` placeholder in HTTP TTS template (typically in URL for GET, in body for POST).
 - `response_pipeline` in `HTTP_TTS` is not a valid JSON array, or a step name / `path` is incorrect.
 - `OPENAI_WS_TTS` is configured with an HTTP URL instead of a WebSocket URL, or vice versa.
+- `tts_vits_package_path` in `VITS_TTS` is not a local `.zip` model package or extracted package directory, or it does not exist.
+- The `VITS_TTS` package has no recognizable `.onnx` / config JSON / lexicon, or the config is missing `sample_rate` / token mappings.
+- `tts_vits_options` in `VITS_TTS` is not valid JSON, or local option names / numeric values are invalid.
 - Wrong endpoint path for TTS/STT (for example using chat/completions instead of audio endpoints).
 - `model_name` does not exist or does not match the API.
 - No real retest after saving config.
@@ -433,7 +457,7 @@
   - When `http_method=GET`, `{text}` must appear in `url_template`.
   - When `http_method=POST`, `{text}` must appear in `request_body`.
 - Optional placeholders: `{rate}`, `{pitch}`, `{voice}`.
-- Only these placeholders are stably supported for external configuration: `{text}`, `{rate}`, `{pitch}`, `{voice}`.
+- Stable placeholders for external configuration: `{text}`, `{rate}`, `{pitch}`, `{voice}`, `{apiKey}`, `{model}`, `{locale}`, `{uuid}`.
 6) HTTP_TTS response handling notes (forward-compatible with released configs):
 - Leave `response_pipeline` empty or use `[]` to keep the old behavior: the first response body is treated as audio directly.
 - Only fill `response_pipeline` when the service returns JSON, nested fields, or a follow-up download URL before audio is available.
@@ -761,8 +785,8 @@
         {
           name: "tts_service_type"
           description: {
-            zh: "可选，SIMPLE_TTS/HTTP_TTS/OPENAI_WS_TTS/SILICONFLOW_TTS/MINIMAX_TTS/OPENAI_TTS"
-            en: "Optional, SIMPLE_TTS/HTTP_TTS/OPENAI_WS_TTS/SILICONFLOW_TTS/MINIMAX_TTS/OPENAI_TTS"
+            zh: "可选，SIMPLE_TTS/HTTP_TTS/OPENAI_WS_TTS/SILICONFLOW_TTS/MINIMAX_TTS/MIMO_TTS/DOUBAO_TTS/OPENAI_TTS/VITS_TTS"
+            en: "Optional, SIMPLE_TTS/HTTP_TTS/OPENAI_WS_TTS/SILICONFLOW_TTS/MINIMAX_TTS/MIMO_TTS/DOUBAO_TTS/OPENAI_TTS/VITS_TTS"
           }
           type: string
           required: false
@@ -770,8 +794,8 @@
         {
           name: "tts_url_template"
           description: {
-            zh: "可选，TTS URL 模板。仅支持 `{text}`、`{rate}`、`{pitch}`、`{voice}`"
-            en: "Optional TTS URL template. Supports only `{text}`, `{rate}`, `{pitch}`, `{voice}`"
+            zh: "可选，HTTP 类 TTS 的 URL 模板。HTTP 系列仅支持 `{text}`、`{rate}`、`{pitch}`、`{voice}`"
+            en: "Optional URL template for HTTP-style TTS providers. HTTP-style providers support only `{text}`, `{rate}`, `{pitch}`, `{voice}`"
           }
           type: string
           required: false
@@ -788,8 +812,8 @@
         {
           name: "tts_headers"
           description: {
-            zh: "可选，TTS headers 的 JSON 对象字符串"
-            en: "Optional JSON object string for TTS headers"
+            zh: "可选，HTTP 类 TTS headers 的 JSON 对象字符串"
+            en: "Optional JSON object string for HTTP-style TTS headers"
           }
           type: string
           required: false
@@ -806,8 +830,8 @@
         {
           name: "tts_request_body"
           description: {
-            zh: "可选，TTS POST body 模板。仅支持 `{text}`、`{rate}`、`{pitch}`、`{voice}`"
-            en: "Optional TTS POST body template. Supports only `{text}`, `{rate}`, `{pitch}`, `{voice}`"
+            zh: "可选，HTTP 类 TTS 的 POST body 模板。仅支持 `{text}`、`{rate}`、`{pitch}`、`{voice}`"
+            en: "Optional POST body template for HTTP-style TTS providers. Supports only `{text}`, `{rate}`, `{pitch}`, `{voice}`"
           }
           type: string
           required: false
@@ -833,8 +857,8 @@
         {
           name: "tts_voice_id"
           description: {
-            zh: "可选，TTS 音色 ID"
-            en: "Optional TTS voice id"
+            zh: "可选，TTS 音色 ID。MIMO voiceclone 可填写完整 data:audio/...;base64,... 音频样本"
+            en: "Optional TTS voice id. For MIMO voiceclone, this may be the full data:audio/...;base64,... audio sample"
           }
           type: string
           required: false
@@ -844,6 +868,33 @@
           description: {
             zh: "可选，TTS 模型名"
             en: "Optional TTS model name"
+          }
+          type: string
+          required: false
+        },
+        {
+          name: "tts_vits_package_path"
+          description: {
+            zh: "可选，本地 VITS/Piper TTS 模型包路径，支持 .zip 文件或已解压目录"
+            en: "Optional local VITS/Piper TTS package path, supporting a .zip file or extracted package directory"
+          }
+          type: string
+          required: false
+        },
+        {
+          name: "tts_vits_speaker_id"
+          description: {
+            zh: "可选，VITS/Piper TTS 模型包需要的数字 speaker id"
+            en: "Optional numeric speaker id required by the VITS/Piper TTS package"
+          }
+          type: string
+          required: false
+        },
+        {
+          name: "tts_vits_options"
+          description: {
+            zh: "可选，VITS/Piper TTS 模型包参数 JSON 对象字符串"
+            en: "Optional JSON object string for VITS/Piper TTS package options"
           }
           type: string
           required: false
@@ -994,8 +1045,8 @@
         {
           name: "api_provider_type"
           description: {
-            zh: "可选，提供商枚举名"
-            en: "Optional provider enum name"
+            zh: "可选，提供商枚举名（如 OPENAI_GENERIC/OPENAI_LOCAL/OPENAI_RESPONSES_GENERIC/DEEPSEEK/GEMINI_GENERIC/LMSTUDIO/OLLAMA/MNN/LLAMA_CPP；其中 LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP 为本地模型链路）"
+            en: "Optional provider enum name (e.g. OPENAI_GENERIC/OPENAI_LOCAL/OPENAI_RESPONSES_GENERIC/DEEPSEEK/GEMINI_GENERIC/LMSTUDIO/OLLAMA/MNN/LLAMA_CPP; LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP are local-model providers)"
           }
           type: string
           required: false
@@ -1266,6 +1317,15 @@
           description: {
             zh: "可选，是否启用 Google Search"
             en: "Optional Google Search switch"
+          }
+          type: boolean
+          required: false
+        },
+        {
+          name: "enable_claude_1h_prompt_cache"
+          description: {
+            zh: "可选，是否启用 Claude 1h Prompt Cache"
+            en: "Optional Claude 1h prompt cache switch"
           }
           type: boolean
           required: false
@@ -1372,8 +1432,8 @@
         {
           name: "api_provider_type"
           description: {
-            zh: "可选，提供商枚举名"
-            en: "Optional provider enum name"
+            zh: "可选，提供商枚举名（如 OPENAI_GENERIC/OPENAI_LOCAL/OPENAI_RESPONSES_GENERIC/DEEPSEEK/GEMINI_GENERIC/LMSTUDIO/OLLAMA/MNN/LLAMA_CPP；其中 LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP 为本地模型链路）"
+            en: "Optional provider enum name (e.g. OPENAI_GENERIC/OPENAI_LOCAL/OPENAI_RESPONSES_GENERIC/DEEPSEEK/GEMINI_GENERIC/LMSTUDIO/OLLAMA/MNN/LLAMA_CPP; LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP are local-model providers)"
           }
           type: string
           required: false
@@ -1644,6 +1704,15 @@
           description: {
             zh: "可选，是否启用 Google Search"
             en: "Optional Google Search switch"
+          }
+          type: boolean
+          required: false
+        },
+        {
+          name: "enable_claude_1h_prompt_cache"
+          description: {
+            zh: "可选，是否启用 Claude 1h Prompt Cache"
+            en: "Optional Claude 1h prompt cache switch"
           }
           type: boolean
           required: false
@@ -2067,7 +2136,7 @@ description: one-line summary of what this skill does
         const normalizedPackageName = normalize_package_key(packageName);
         const normalizedPaths = relatedPaths.map((path) => String(path ?? "").trim()).filter(Boolean);
         const packageLoadErrors = payload?.packageLoadErrors;
-        if (!packageLoadErrors || typeof packageLoadErrors !== "object") {
+        if (!packageLoadErrors) {
             return {};
         }
         return Object.fromEntries(Object.entries(packageLoadErrors).filter(([key, value]) => {
@@ -2156,12 +2225,12 @@ description: one-line summary of what this skill does
         return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : defaultValue;
     }
     async function android_path_exists(path) {
-        const result = (await Tools.Files.exists(path, "android"));
-        return !!result?.exists;
+        const result = await Tools.Files.exists(path, "android");
+        return result.exists;
     }
     async function get_android_file_type(path) {
-        const result = (await Tools.Files.info(path, "android"));
-        return String(result?.fileType ?? "").trim().toLowerCase();
+        const result = await Tools.Files.info(path, "android");
+        return result.fileType.trim().toLowerCase();
     }
     async function ensure_android_directory(path) {
         await Tools.Files.mkdir(path, true, "android");
@@ -2186,12 +2255,8 @@ description: one-line summary of what this skill does
         }
     }
     async function read_android_text_file(path) {
-        const result = (await Tools.Files.read({ path, environment: "android" }));
-        const content = typeof result?.content === "string" ? result.content : extract_string_result(result);
-        if (typeof content !== "string") {
-            throw new Error(`Failed to read text file: ${path}`);
-        }
-        return content;
+        const result = await Tools.Files.read({ path, environment: "android" });
+        return result.content;
     }
     function parse_json_record(raw) {
         if (!raw)
@@ -2276,7 +2341,7 @@ description: one-line summary of what this skill does
     }
     async function delete_duplicate_external_js_package_files(packageName, keepPath) {
         const removedPaths = [];
-        const listing = (await Tools.Files.list(SANDBOX_EXTERNAL_PACKAGES_DIR, "android"));
+        const listing = await Tools.Files.list(SANDBOX_EXTERNAL_PACKAGES_DIR, "android");
         for (const entry of listing?.entries ?? []) {
             const entryName = String(entry?.name ?? "").trim();
             if (!entryName || entry?.isDirectory || !entryName.toLowerCase().endsWith(".js")) {
@@ -2538,7 +2603,7 @@ description: one-line summary of what this skill does
             let activateResult = null;
             if (activateAfterInstall) {
                 logStep(`Activating package via use_package -> ${packageInfo.packageName}`);
-                activateResult = extract_string_result(await toolCall("use_package", { package_name: packageInfo.packageName }));
+                activateResult = await Tools.System.usePackage(packageInfo.packageName);
                 logStep(`Activation result -> ${activateResult || "<empty>"}`);
             }
             else {
@@ -2631,7 +2696,7 @@ description: one-line summary of what this skill does
                     reset_subpackage_states: resetSubpackageStates
                 }
             });
-            logStep(`Debug install broadcast dispatched -> ${extract_string_result(broadcastResult) || "<empty>"}`);
+            logStep(`Debug install broadcast dispatched -> ${broadcastResult.result || "<empty>"}`);
             const refresh = await refresh_sandbox_packages_until(resolvedSource.packageId, waitMs);
             const relatedLoadErrors = collect_related_package_load_errors(refresh.payload, resolvedSource.packageId, resolvedSource.sourcePath, archivePath, targetPath);
             logStep(`Sandbox refresh completed -> found=${String(Boolean(refresh.packageEntry))}, builtIn=${String(refresh.packageEntry?.isBuiltIn ?? false)}`);
@@ -2678,7 +2743,7 @@ description: one-line summary of what this skill does
                 logStep(`Enabling subpackage -> ${subpackageId}`);
                 const enableResult = await Tools.SoftwareSettings.setSandboxPackageEnabled(subpackageId, true);
                 logStep(`Subpackage enable result [${subpackageId}] -> ${enableResult.message || "<empty>"}`);
-                const activateResult = extract_string_result(await toolCall("use_package", { package_name: subpackageId }));
+                const activateResult = await Tools.System.usePackage(subpackageId);
                 logStep(`Subpackage activate result [${subpackageId}] -> ${activateResult || "<empty>"}`);
                 subpackageResults.push({
                     subpackage_id: subpackageId,
@@ -2830,22 +2895,6 @@ description: one-line summary of what this skill does
             });
         }
     }
-    function extract_string_result(result) {
-        if (typeof result === "string")
-            return result;
-        if (!result || typeof result !== "object" || Array.isArray(result))
-            return "";
-        const record = result;
-        if (typeof record.value === "string")
-            return record.value;
-        if (record.value !== undefined && record.value !== null)
-            return String(record.value);
-        if (typeof record.data === "string")
-            return record.data;
-        if (record.data !== undefined && record.data !== null)
-            return String(record.data);
-        return "";
-    }
     async function read_environment_variable(params) {
         try {
             const key = (params?.key ?? "").trim();
@@ -2936,12 +2985,6 @@ description: one-line summary of what this skill does
     async function set_speech_services_config(params) {
         try {
             const updates = { ...(params ?? {}) };
-            if (updates.tts_locale !== undefined && updates.tts_locale !== null) {
-                updates.tts_locale = String(updates.tts_locale);
-            }
-            if (Array.isArray(updates.tts_response_pipeline)) {
-                updates.tts_response_pipeline = JSON.stringify(updates.tts_response_pipeline);
-            }
             const result = await Tools.SoftwareSettings.setSpeechServicesConfig(updates);
             const parsed = result;
             complete({
@@ -2974,8 +3017,7 @@ description: one-line summary of what this skill does
             delete options.text;
             const result = await Tools.SoftwareSettings.testTtsPlayback(text, options);
             const success = result.playbackTriggered;
-            const detailMessage = (typeof result.errorMessage === "string" && result.errorMessage.trim().length > 0 && result.errorMessage) ||
-                "TTS playback test failed.";
+            const detailMessage = result.errorMessage?.trim() || "TTS playback test failed.";
             complete({
                 success,
                 message: success ? "TTS playback test triggered." : detailMessage,
@@ -3310,7 +3352,7 @@ description: one-line summary of what this skill does
                 });
                 return;
             }
-            const result = await toolCall("use_package", { package_name: packageName });
+            const result = await Tools.System.usePackage(packageName);
             complete({
                 success: true,
                 message: `Package probe finished: ${packageName}`,

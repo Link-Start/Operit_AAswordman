@@ -31,13 +31,16 @@ export namespace ToolPkg {
         | "message_processing"
         | "xml_render"
         | "input_menu_toggle"
+        | ChatInputEventName
+        | ChatViewEventName
         | "navigation_entry_action"
         | ToolLifecycleEventName
         | PromptInputEventName
         | PromptHistoryEventName
         | SystemPromptComposeEventName
         | ToolPromptComposeEventName
-        | PromptFinalizeEventName;
+        | PromptFinalizeEventName
+        | SummaryGenerateEventName;
 
     export type HookReturn = JsonValue | void | Promise<JsonValue | void>;
 
@@ -97,6 +100,7 @@ export namespace ToolPkg {
         id: string;
         title: string;
         description?: string;
+        icon?: string;
         isChecked?: boolean;
         slot?: `${InputMenuToggleSlot}`;
     }
@@ -112,7 +116,33 @@ export namespace ToolPkg {
         | void
         | Promise<InputMenuToggleDefinitionResult[] | InputMenuToggleObjectResult | null | void>;
 
+    export type ChatInputEventName =
+        | "input_changed"
+        | "submit_requested"
+        | "submitted";
+
+    export type ChatViewEventName =
+        | "view_opened"
+        | "view_updated"
+        | "view_closed";
+
+    export interface ChatInputHookObjectResult extends JsonObject {
+        action?: "allow" | "block" | "replace" | "consume";
+        text?: string;
+        message?: string;
+        clearInput?: boolean;
+        metadata?: JsonObject;
+    }
+
+    export type ChatInputHookReturn =
+        | string
+        | ChatInputHookObjectResult
+        | null
+        | void
+        | Promise<string | ChatInputHookObjectResult | null | void>;
+
     export type ToolLifecycleEventName =
+        | "tool_call_intercept"
         | "tool_call_requested"
         | "tool_permission_checked"
         | "tool_execution_started"
@@ -136,11 +166,17 @@ export namespace ToolPkg {
     export type ToolPromptComposeEventName =
         | "before_compose_tool_prompt"
         | "filter_tool_prompt_items"
+        | "filter_tool_call_tools"
         | "after_compose_tool_prompt";
 
     export type PromptFinalizeEventName =
         | "before_finalize_prompt"
         | "before_send_to_model";
+
+    export type SummaryGenerateEventName =
+        | "before_prepare_summary_prompt"
+        | "before_send_to_model"
+        | "after_generate_summary";
 
     export type PromptTurnKind =
         | "SYSTEM"
@@ -157,6 +193,20 @@ export namespace ToolPkg {
         metadata?: JsonObject;
     }
 
+    export type ActivePromptType =
+        | "character_card"
+        | "character_group";
+
+    export interface ActivePromptSnapshot extends JsonObject {
+        type: ActivePromptType;
+        id: string;
+        name: string;
+    }
+
+    export interface HookMetadata extends JsonObject {
+        activePrompt?: ActivePromptSnapshot;
+    }
+
     export interface ToolLifecycleEventPayload extends JsonObject {
         toolName: string;
         parameters?: { [key: string]: string };
@@ -169,6 +219,26 @@ export namespace ToolPkg {
         resultJson?: JsonValue;
     }
 
+    export interface ToolPromptParameter extends JsonObject {
+        name: string;
+        type?: string;
+        description: string;
+        required?: boolean;
+        default?: JsonPrimitive;
+    }
+
+    export interface ToolPromptItem extends JsonObject {
+        categoryName: string;
+        categoryHeader?: string;
+        categoryFooter?: string;
+        name: string;
+        description: string;
+        parameters?: string;
+        details?: string;
+        notes?: string;
+        parametersStructured?: ToolPromptParameter[];
+    }
+
     export interface PromptHookObjectResult extends JsonObject {
         rawInput?: string;
         processedInput?: string;
@@ -176,7 +246,17 @@ export namespace ToolPkg {
         preparedHistory?: PromptTurn[];
         systemPrompt?: string;
         toolPrompt?: string;
-        metadata?: JsonObject;
+        availableTools?: ToolPromptItem[];
+        metadata?: HookMetadata;
+    }
+
+    export interface SummaryHookObjectResult extends JsonObject {
+        chatHistory?: PromptTurn[];
+        preparedHistory?: PromptTurn[];
+        systemPrompt?: string;
+        summaryPrompt?: string;
+        summaryResult?: string;
+        metadata?: HookMetadata;
     }
 
     export interface PromptHookEventPayload extends JsonObject {
@@ -192,11 +272,45 @@ export namespace ToolPkg {
         systemPrompt?: string;
         toolPrompt?: string;
         modelParameters?: JsonObject[];
-        availableTools?: JsonObject[];
-        metadata?: JsonObject;
+        availableTools?: ToolPromptItem[];
+        metadata?: HookMetadata;
     }
 
-    export type ToolLifecycleHookReturn = void | Promise<void>;
+    export interface SummaryGenerateEventPayload extends JsonObject {
+        stage?: string;
+        functionType?: string;
+        useEnglish?: boolean;
+        previousSummary?: string;
+        chatHistory?: PromptTurn[];
+        preparedHistory?: PromptTurn[];
+        systemPrompt?: string;
+        summaryPrompt?: string;
+        summaryResult?: string;
+        modelParameters?: JsonObject[];
+        metadata?: HookMetadata;
+    }
+
+    export interface ToolLifecycleAllowResult extends JsonObject {
+        action: "allow";
+    }
+
+    export interface ToolLifecycleBlockResult extends JsonObject {
+        action: "block";
+        reason: string;
+    }
+
+    export type ToolLifecycleHookObjectResult =
+        | ToolLifecycleAllowResult
+        | ToolLifecycleBlockResult;
+
+    export type ToolLifecycleHookReturnValue =
+        | ToolLifecycleHookObjectResult
+        | null
+        | void;
+
+    export type ToolLifecycleHookReturn =
+        | ToolLifecycleHookReturnValue
+        | Promise<ToolLifecycleHookReturnValue>;
 
     export type PromptInputHookReturn =
         | string
@@ -234,6 +348,13 @@ export namespace ToolPkg {
         | void
         | Promise<string | PromptTurn[] | PromptHookObjectResult | null | void>;
 
+    export type SummaryGenerateHookReturn =
+        | string
+        | SummaryHookObjectResult
+        | null
+        | void
+        | Promise<string | SummaryHookObjectResult | null | void>;
+
     export type AppLifecycleHookHandler =
         (event: AppLifecycleHookEvent) => AppLifecycleHookReturn;
 
@@ -247,6 +368,9 @@ export namespace ToolPkg {
 
     export type InputMenuToggleHookHandler =
         (event: InputMenuToggleHookEvent) => InputMenuToggleHookReturn;
+
+    export type ChatInputHookHandler =
+        (event: ChatInputHookEvent) => ChatInputHookReturn;
 
     export type NavigationEntryActionHookHandler =
         (event: NavigationEntryActionHookEvent) => HookReturn;
@@ -274,6 +398,9 @@ export namespace ToolPkg {
 
     export type PromptEstimateFinalizeHookHandler =
         (event: PromptEstimateFinalizeHookEvent) => PromptFinalizeHookReturn;
+
+    export type SummaryGenerateHookHandler =
+        (event: SummaryGenerateHookEvent) => SummaryGenerateHookReturn;
 
     export interface HookEventBase<
         TEventName extends string,
@@ -313,6 +440,30 @@ export namespace ToolPkg {
     export interface InputMenuToggleEventPayload extends JsonObject {
         action?: "create" | "toggle" | string;
         toggleId?: string;
+        chatId?: string;
+        runtime?: string;
+    }
+
+    export interface ChatInputEventPayload extends JsonObject {
+        chatId?: string;
+        text?: string;
+        selectionStart?: number;
+        selectionEnd?: number;
+        hasAttachments?: boolean;
+        attachmentCount?: number;
+        isProcessing?: boolean;
+        inputStyle?: "classic" | "agent" | string;
+        source?: "classic" | "agent" | "fullscreen" | "queue" | string;
+        submitSource?: "send" | "button" | "ime_send" | "enter" | "queue" | string;
+    }
+
+    export interface ChatViewEventPayload extends JsonObject {
+        viewId?: string;
+        chatId?: string;
+        workspacePath?: string;
+        workspaceEnv?: string;
+        runtime?: string;
+        title?: string;
     }
 
     export interface NavigationEntryActionEventPayload extends JsonObject {
@@ -334,6 +485,12 @@ export namespace ToolPkg {
 
     export interface InputMenuToggleHookEvent
         extends HookEventBase<"input_menu_toggle", InputMenuToggleEventPayload> {}
+
+    export interface ChatInputHookEvent
+        extends HookEventBase<ChatInputEventName, ChatInputEventPayload> {}
+
+    export interface ChatViewHookEvent
+        extends HookEventBase<ChatViewEventName, ChatViewEventPayload> {}
 
     export interface NavigationEntryActionHookEvent
         extends HookEventBase<"navigation_entry_action", NavigationEntryActionEventPayload> {}
@@ -362,6 +519,9 @@ export namespace ToolPkg {
     export interface PromptEstimateFinalizeHookEvent
         extends HookEventBase<PromptFinalizeEventName, PromptHookEventPayload> {}
 
+    export interface SummaryGenerateHookEvent
+        extends HookEventBase<SummaryGenerateEventName, SummaryGenerateEventPayload> {}
+
     export interface AiProviderConfig extends JsonObject {
         id: string;
         name: string;
@@ -376,6 +536,7 @@ export namespace ToolPkg {
         enableDirectAudioProcessing: boolean;
         enableDirectVideoProcessing: boolean;
         enableGoogleSearch: boolean;
+        enableClaude1hPromptCache: boolean;
         enableToolCall: boolean;
         requestLimitPerMinute: number;
         maxConcurrentRequests: number;
@@ -555,6 +716,16 @@ export namespace ToolPkg {
         function: InputMenuToggleHookHandler;
     }
 
+    export interface ChatInputHookRegistration {
+        id: string;
+        function: ChatInputHookHandler;
+    }
+
+    export interface ChatViewHookRegistration {
+        id: string;
+        function: HookHandler<ChatViewHookEvent>;
+    }
+
     export interface ToolLifecycleHookRegistration {
         id: string;
         function: ToolLifecycleHookHandler;
@@ -595,6 +766,11 @@ export namespace ToolPkg {
         function: PromptEstimateFinalizeHookHandler;
     }
 
+    export interface SummaryGenerateHookRegistration {
+        id: string;
+        function: SummaryGenerateHookHandler;
+    }
+
     export interface AiProviderRegistration {
         id: string;
         displayName?: string;
@@ -603,6 +779,37 @@ export namespace ToolPkg {
         sendMessage: { function: AiProviderSendMessageHandler };
         testConnection: { function: AiProviderTestConnectionHandler };
         calculateInputTokens: { function: AiProviderCalculateInputTokensHandler };
+    }
+
+    export type RuntimeKind = "main" | "ui" | "sandbox" | "provider";
+
+    export interface IpcMeta {
+        channel: string;
+        callerContextKey?: string;
+        currentContextKey?: string;
+        currentRuntime?: RuntimeKind;
+        packageTarget?: string;
+    }
+
+    export interface IpcCallOptions {
+        targetRuntime?: RuntimeKind;
+        targetContextKey?: string;
+    }
+
+    export interface IpcApi {
+        on<TPayload = unknown, TResult = unknown>(
+            channel: string,
+            handler: (payload: TPayload, meta: IpcMeta) => TResult | Promise<TResult>
+        ): () => void;
+        off<TPayload = unknown, TResult = unknown>(
+            channel: string,
+            handler?: (payload: TPayload, meta: IpcMeta) => TResult | Promise<TResult>
+        ): boolean;
+        call<TPayload = unknown, TResult = unknown>(
+            channel: string,
+            payload?: TPayload,
+            options?: IpcCallOptions
+        ): Promise<TResult>;
     }
 
     export interface Registry {
@@ -614,6 +821,8 @@ export namespace ToolPkg {
         registerMessageProcessingPlugin(definition: MessageProcessingPluginRegistration): void;
         registerXmlRenderPlugin(definition: XmlRenderPluginRegistration): void;
         registerInputMenuTogglePlugin(definition: InputMenuTogglePluginRegistration): void;
+        registerChatInputHook(definition: ChatInputHookRegistration): void;
+        registerChatViewHook(definition: ChatViewHookRegistration): void;
         registerToolLifecycleHook(definition: ToolLifecycleHookRegistration): void;
         registerPromptInputHook(definition: PromptInputHookRegistration): void;
         registerPromptHistoryHook(definition: PromptHistoryHookRegistration): void;
@@ -622,8 +831,11 @@ export namespace ToolPkg {
         registerToolPromptComposeHook(definition: ToolPromptComposeHookRegistration): void;
         registerPromptFinalizeHook(definition: PromptFinalizeHookRegistration): void;
         registerPromptEstimateFinalizeHook(definition: PromptEstimateFinalizeHookRegistration): void;
+        registerSummaryGenerateHook(definition: SummaryGenerateHookRegistration): void;
         registerAiProvider(definition: AiProviderRegistration): void;
         readResource(key: string, outputFileName?: string, internal?: boolean): Promise<string>;
+        getConfigDir(pluginId?: string): string;
+        ipc: IpcApi;
     }
 }
 
@@ -644,6 +856,10 @@ declare global {
 
     function registerToolPkgInputMenuTogglePlugin(definition: ToolPkg.InputMenuTogglePluginRegistration): void;
 
+    function registerToolPkgChatInputHook(definition: ToolPkg.ChatInputHookRegistration): void;
+
+    function registerToolPkgChatViewHook(definition: ToolPkg.ChatViewHookRegistration): void;
+
     function registerToolPkgToolLifecycleHook(definition: ToolPkg.ToolLifecycleHookRegistration): void;
 
     function registerToolPkgPromptInputHook(definition: ToolPkg.PromptInputHookRegistration): void;
@@ -659,6 +875,8 @@ declare global {
     function registerToolPkgPromptFinalizeHook(definition: ToolPkg.PromptFinalizeHookRegistration): void;
 
     function registerToolPkgPromptEstimateFinalizeHook(definition: ToolPkg.PromptEstimateFinalizeHookRegistration): void;
+
+    function registerToolPkgSummaryGenerateHook(definition: ToolPkg.SummaryGenerateHookRegistration): void;
 
     function registerToolPkgAiProvider(definition: ToolPkg.AiProviderRegistration): void;
 
